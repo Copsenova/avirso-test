@@ -48,6 +48,13 @@ def partout(f, suite):
     return list(_bassin.map(f, suite)) if _bassin else [f(x) for x in suite]
 
 
+CUMUL = {}
+
+
+def chrono(nom, t0):
+    CUMUL[nom] = CUMUL.get(nom, 0.0) + time.time() - t0
+
+
 T_DEBUT = time.time()
 _t = [T_DEBUT]
 
@@ -234,12 +241,15 @@ def expression(a):
 
 def generer(ph, kd):
     n = kd.shape[1]
+    _a = time.time()
     with _v_gpu, torch.no_grad():
+        chrono('attente du processeur graphique', _a); _a = time.time()
         d = S['stitching'](torch.cat([ph['ks'].reshape(1, -1), kd.reshape(1, -1)], 1))
         kd = kd + d[..., :3 * n].reshape(1, n, 3)
         kd[..., :2] += d[..., 3 * n:3 * n + 2].reshape(1, 1, 2)
         im = G(feature=W(ph['fs'], kp_source=ph['ks'], kp_driving=kd)['out'])
         a = (im[0].permute(1, 2, 0).clamp(0, 1).float().cpu().numpy() * 255).astype(np.uint8)
+        chrono('génération', _a)
     a = cv2.cvtColor(a, cv2.COLOR_RGB2BGR)
     return a if a.shape[0] == TAILLE else cv2.resize(a, (TAILLE, TAILLE), interpolation=cv2.INTER_CUBIC)
 
@@ -260,9 +270,13 @@ except AttributeError:
 def flot(a, b):
     """Déplacement de chaque point de `a` vers `b`, calculé en demi-définition puis lissé (stable d'une image à l'autre)."""
     d = TAILLE // 2
+    _a = time.time()
     f = _flot(cv2.resize(a, (d, d), interpolation=cv2.INTER_AREA), cv2.resize(b, (d, d), interpolation=cv2.INTER_AREA))
+    chrono('flot', _a); _a = time.time()
     f = cv2.resize(f, (TAILLE, TAILLE), interpolation=cv2.INTER_LINEAR) * (TAILLE / d)
-    return cv2.GaussianBlur(f, (0, 0), 4.0 * TAILLE / 1024)
+    f = cv2.GaussianBlur(f, (0, 0), 4.0 * TAILLE / 1024)
+    chrono('flot lissé', _a)
+    return f
 
 
 _gx, _gy = np.meshgrid(np.arange(TAILLE, dtype=np.float32), np.arange(TAILLE, dtype=np.float32))
@@ -278,13 +292,16 @@ SIG = 3.0 * TAILLE / 1024
 def grain(ph, gt):
     """Pose sur l'image générée `gt` le détail fin de la vraie photo, déplacé au même endroit."""
     f = flot(gris(gt), gris(ph['g0']))
+    _a = time.time()
     r = tordre(ph['net_cale'], f).astype(np.float32)
     bas_r = cv2.GaussianBlur(r, (0, 0), SIG)
     bas_g = cv2.GaussianBlur(gt.astype(np.float32), (0, 0), SIG)
     # là où la vraie photo déplacée ne ressemble plus à l'image générée (zone cachée, flot raté), on n'ajoute rien
     accord = np.exp(-(np.abs(bas_r - bas_g).mean(2) / 18.0) ** 2)
     m = cv2.GaussianBlur(accord, (0, 0), SIG)[..., None]
-    return np.clip(gt.astype(np.float32) + m * (r - bas_r), 0, 255).astype(np.uint8)
+    s = np.clip(gt.astype(np.float32) + m * (r - bas_r), 0, 255).astype(np.uint8)
+    chrono('grain', _a)
+    return s
 
 
 # ---------- 3. mise en scène (fond, lumière, étalonnage) : voir mise_en_scene.py ----------
@@ -347,6 +364,7 @@ def lisser(v, sigma):
 
 
 etape('angles')
+print('temps détail des angles (cumul des fils) : ' + ', '.join('%s %.1f s' % kv for kv in CUMUL.items()))
 # ---------- 5. stabilisation et fond ----------
 # La tête ne doit ni monter, ni descendre, ni changer de taille pendant qu'elle tourne : on mesure sa place sur
 # chaque image, et on recale chaque image sur une trajectoire régulière (hauteur et taille fixes, côté lissé).
