@@ -29,6 +29,7 @@ PAS = float(os.environ.get('PAS', 1.0))
 MARGE = float(os.environ.get('MARGE', 5))
 TAILLE = int(os.environ.get('TAILLE', 1024))
 FOND = os.environ.get('FOND', '1') == '1'
+IPS = int(os.environ.get('IPS', 40))        # images par seconde de l'animation
 HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
 CADRE = os.environ.get('CADRE')
 CADRE = [float(v) for v in CADRE.split(',')] if CADRE else None
@@ -129,16 +130,18 @@ def detourer(o, taille):
     a = np.clip(cv2.resize(a, (taille, taille), interpolation=cv2.INTER_CUBIC), 0, 1)
     k = max(3, int(round(7 * taille / 1024)) | 1)
     a = cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
-    return cv2.GaussianBlur(a, (0, 0), 3.5 * taille / 1024)[..., None]
+    return cv2.GaussianBlur(a, (0, 0), 5.0 * taille / 1024)[..., None]
 
 
 def mesurer_tete(o):
-    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical."""
+    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical, bas du menton."""
     p = o[..., 1] + o[..., 3]
     t = p.sum() + 1e-6
     ys, xs = np.mgrid[0:256, 0:256].astype(np.float32) / 256
     cx, cy = float((xs * p).sum() / t), float((ys * p).sum() / t)
-    return cx, cy, float(np.sqrt((((ys - cy) ** 2) * p).sum() / t))
+    lignes = p.sum(1)
+    bas = float(np.nonzero(lignes > 0.08 * lignes.max())[0][-1] + 1) / 256      # bas du menton
+    return cx, cy, float(np.sqrt((((ys - cy) ** 2) * p).sum() / t)), bas
 
 
 # ---------- 1. cadrage et mesure de chaque vraie photo ----------
@@ -243,11 +246,27 @@ def grain(ph, gt):
 
 
 # ---------- 3. fond ----------
-_y = np.linspace(0, 1, TAILLE, dtype=np.float32)[:, None, None]
-ARRIERE = (np.array([[[26, 20, 18]]], np.float32) * (1 - _y) + np.array([[[12, 10, 9]]], np.float32) * _y) * np.ones((1, TAILLE, 1), np.float32)
+# Fond de studio : une lumière douce derrière la tête, qui s'éteint vers les bords (pas un aplat).
+_fy, _fx = np.mgrid[0:TAILLE, 0:TAILLE].astype(np.float32) / TAILLE
+_r = np.clip(np.sqrt(((_fx - 0.5) / 0.62) ** 2 + ((_fy - 0.42) / 0.62) ** 2), 0, 1)[..., None]
+_r = _r * _r * (3 - 2 * _r)
+ARRIERE = np.array([[[50, 43, 40]]], np.float32) * (1 - _r) + np.array([[[9, 8, 8]]], np.float32) * _r
+_alea = np.random.default_rng(7)
 
 
-BAS = np.clip((0.985 - _y) / 0.13, 0, 1)
+def composer(A, alpha, cx, menton):
+    """Pose la tête sur le fond. Le buste s'efface sous le menton, en se resserrant autour du cou."""
+    bas = np.clip(1 - (_fy - (menton + 0.02)) / 0.14, 0, 1); bas = bas * bas * (3 - 2 * bas)
+    cou = np.exp(-((_fx - cx) / 0.19) ** 2)
+    passe = np.clip((_fy - (menton - 0.03)) / 0.07, 0, 1)
+    alpha = alpha.reshape(TAILLE, TAILLE) * bas * ((1 - passe) + passe * cou)
+    # près du bord, la tête s'assombrit un peu : cela retire le liseré clair du décor d'origine et donne du volume
+    dedans = cv2.GaussianBlur(alpha, (0, 0), 12.0 * TAILLE / 1024)[..., None]
+    alpha = alpha[..., None]
+    avant = A.astype(np.float32) * (0.80 + 0.20 * np.clip(dedans * 1.6 - 0.3, 0, 1))
+    img = alpha * avant + (1 - alpha) * ARRIERE
+    img += _alea.normal(0, 1.4, (TAILLE, TAILLE, 1)).astype(np.float32)      # même grain léger sur la tête et sur le fond
+    return np.clip(img, 0, 255).astype(np.uint8)
 
 
 # ---------- 4. toutes les images ----------
@@ -302,17 +321,31 @@ if sorties:
     M3 = np.array([mesurer_tete(o) for o in sorties])
     mx, my, ms = lisser(M3[:, 0], 1.5), lisser(M3[:, 1], 1.5), lisser(M3[:, 2], 1.5)
     vx, vy, vs = lisser(M3[:, 0], 12), float(np.median(my)), float(np.median(ms))
+    ech = np.clip(vs / ms, 0.94, 1.06)
+    menton = float(np.median(vy + ech * (M3[:, 3] - my)))
     print('avant stabilisation : hauteur de la tête variant de %.1f px, taille de %.1f %%' % ((my.max() - my.min()) * TAILLE, 100 * (ms.max() / ms.min() - 1)))
     for n, A in enumerate(brutes):
-        e = float(np.clip(vs / ms[n], 0.94, 1.06))
+        e = float(ech[n])
         # agrandissement e autour du centre mesuré, puis déplacement vers le centre visé
         T = np.array([[e, 0, (vx[n] - e * mx[n]) * TAILLE], [0, e, (vy - e * my[n]) * TAILLE]], np.float32)
         A = cv2.warpAffine(A, T, (TAILLE, TAILLE), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
         if FOND:
-            alpha = detourer(sorties[n], TAILLE)
-            alpha = cv2.warpAffine(alpha, T, (TAILLE, TAILLE), flags=cv2.INTER_LINEAR, borderValue=0)[..., None] * BAS
-            A = (alpha * A.astype(np.float32) + (1 - alpha) * ARRIERE).astype(np.uint8)
-        images.append(A)
+            alpha = cv2.warpAffine(detourer(sorties[n], TAILLE), T, (TAILLE, TAILLE), flags=cv2.INTER_LINEAR, borderValue=0)
+            images.append((A, alpha, float(vx[n])))
+        else:
+            images.append(A)
+    if FOND:
+        # image intermédiaire entre deux angles voisins (les deux glissent à mi-chemin l'une vers l'autre) : mouvement deux fois plus fin
+        fines = []
+        for n in range(len(images)):
+            fines.append(images[n])
+            if n + 1 < len(images):
+                (A, aa, xa), (B, ab, xb) = images[n], images[n + 1]
+                fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
+                C = cv2.addWeighted(tordre(A, fba, 0.5), 0.5, tordre(B, fab, 0.5), 0.5, 0)
+                ac = 0.5 * (tordre(aa, fba, 0.5) + tordre(ab, fab, 0.5))
+                fines.append((C, ac, 0.5 * (xa + xb)))
+        images = [composer(A, al, x, menton) for A, al, x in fines]
 else:
     images = brutes
 
@@ -326,8 +359,12 @@ for ph in photos:
     cv2.imwrite(f"{sortie}_origine_{ph['yaw']:+04.0f}.jpg", ph['net'])
 try:
     import imageio.v2 as imageio
-    suite = images + images[::-1]
-    imageio.mimsave(f'{sortie}.mp4', [im[:, :, ::-1] for im in suite], fps=30, macro_block_size=1)
+    # va-et-vient : la tête ralentit avant de repartir dans l'autre sens, comme une vraie tête filmée
+    N = len(images)
+    D = int(np.ceil(N * np.pi / 2))
+    aller = [int(round((N - 1) * (0.5 - 0.5 * np.cos(np.pi * k / (D - 1))))) for k in range(D)]
+    suite = [images[k] for k in aller + aller[::-1]]
+    imageio.mimsave(f'{sortie}.mp4', [im[:, :, ::-1] for im in suite], fps=IPS, macro_block_size=1, quality=8)
     print('animation :', f'{sortie}.mp4')
 except Exception as e:
     print('animation non écrite :', type(e).__name__, str(e)[:160])
