@@ -8,7 +8,8 @@
 #   3. Entre deux vraies photos, chaque image est un mélange recalé des deux, dosé selon l'angle : pas de saut.
 #      Le regard reste celui des vraies photos (vers l'objectif) : entre deux photos, l'expression glisse de l'une à l'autre.
 #      La tête garde la même inclinaison, puis sa hauteur et sa taille sont stabilisées d'une image à l'autre.
-#   4. La tête est détourée (modèle « selfie multiclass » de MediaPipe, Apache 2.0) quand c'est possible.
+#   4. La tête est détourée (modèle « selfie multiclass » de MediaPipe, Apache 2.0) puis mise en scène comme un portrait
+#      de cinéma : fond de plateau, lumière d'un côté, vêtement dans l'ombre (mise_en_scene.py).
 #
 # À lancer depuis le dossier de LivePortrait :
 #   python tete.py sortie photo1 photo2 photo3
@@ -255,36 +256,14 @@ def grain(ph, gt):
     return np.clip(gt.astype(np.float32) + m * (r - bas_r), 0, 255).astype(np.uint8)
 
 
-# ---------- 3. fond ----------
-# Fond de studio : une lumière douce derrière la tête, qui s'éteint vers les bords (pas un aplat).
-_fy, _fx = np.mgrid[0:TAILLE, 0:TAILLE].astype(np.float32) / TAILLE
-_r = np.clip(np.sqrt(((_fx - 0.5) / 0.62) ** 2 + ((_fy - 0.42) / 0.62) ** 2), 0, 1)[..., None]
-_r = _r * _r * (3 - 2 * _r)
-ARRIERE = np.array([[[50, 43, 40]]], np.float32) * (1 - _r) + np.array([[[9, 8, 8]]], np.float32) * _r
-_alea = np.random.default_rng(7)
+# ---------- 3. mise en scène (fond, lumière, étalonnage) : voir mise_en_scene.py ----------
+from mise_en_scene import Scene
+scene = Scene(TAILLE)
 
 
-_K_BORD = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((int(round(11 * TAILLE / 1024)) | 1,) * 2))
-
-
-def composer(A, alpha, cx, col):
-    """Pose la tête sur le fond. Le vêtement s'efface à partir du col ; `cx` est le milieu du cou."""
-    alpha = alpha.reshape(TAILLE, TAILLE)
-    # 1. Sur le bord, la couleur vient de l'intérieur de la tête : aucune trace du décor d'origine (pas de liseré clair).
-    dedans = cv2.erode(alpha, _K_BORD)
-    sg = 5.0 * TAILLE / 1024
-    Af = A.astype(np.float32)
-    interieur = cv2.GaussianBlur(Af * dedans[..., None], (0, 0), sg) / (cv2.GaussianBlur(dedans, (0, 0), sg)[..., None] + 1e-3)
-    m = cv2.GaussianBlur(dedans, (0, 0), 2.0 * TAILLE / 1024)[..., None]
-    avant = m * Af + (1 - m) * interieur
-    # 2. Le buste : fondu vertical à partir du col, resserré autour du cou
-    bas = np.clip(1 - (_fy - (col - 0.03)) / 0.13, 0, 1); bas = bas * bas * (3 - 2 * bas)
-    cou = np.exp(-((_fx - cx) / 0.24) ** 4)      # plateau large : le cou et la nuque restent nets, seules les épaules s'effacent
-    passe = np.clip((_fy - (col - 0.02)) / 0.06, 0, 1)
-    alpha = (alpha * bas * ((1 - passe) + passe * cou))[..., None]
-    img = alpha * avant + (1 - alpha) * ARRIERE
-    img += _alea.normal(0, 1.4, (TAILLE, TAILLE, 1)).astype(np.float32)      # même grain léger sur la tête et sur le fond
-    return np.clip(img, 0, 255).astype(np.uint8)
+def vetement(o, taille):
+    """Vêtement et objets portés, de 0 à 1 : ils passent dans l'ombre à la mise en scène."""
+    return np.clip(cv2.resize(o[..., 4] + o[..., 5], (taille, taille), interpolation=cv2.INTER_CUBIC), 0, 1)
 
 
 # ---------- 4. toutes les images ----------
@@ -359,7 +338,8 @@ if sorties:
         A = cv2.warpAffine(A, T, (TAILLE, TAILLE), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
         if FOND:
             alpha = cv2.warpAffine(detourer(sorties[n], TAILLE), T, (TAILLE, TAILLE), flags=cv2.INTER_LINEAR, borderValue=0)
-            images.append((A, alpha, float(cous[n]) + dx / TAILLE))
+            habit = cv2.warpAffine(vetement(sorties[n], TAILLE), T, (TAILLE, TAILLE), flags=cv2.INTER_LINEAR, borderValue=0)
+            images.append((A, alpha, habit, float(cous[n]) + dx / TAILLE))
         else:
             images.append(A)
     if FOND:
@@ -368,12 +348,13 @@ if sorties:
         for n in range(len(images)):
             fines.append(images[n])
             if n + 1 < len(images):
-                (A, aa, xa), (B, ab, xb) = images[n], images[n + 1]
+                (A, aa, ha, xa), (B, ab, hb, xb) = images[n], images[n + 1]
                 fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
                 C = cv2.addWeighted(tordre(A, fba, 0.5), 0.5, tordre(B, fab, 0.5), 0.5, 0)
                 ac = 0.5 * (tordre(aa, fba, 0.5) + tordre(ab, fab, 0.5))
-                fines.append((C, ac, 0.5 * (xa + xb)))
-        images = [composer(A, al, x, col) for A, al, x in fines]
+                hc = 0.5 * (tordre(ha, fba, 0.5) + tordre(hb, fab, 0.5))
+                fines.append((C, ac, hc, 0.5 * (xa + xb)))
+        images = [scene.composer(A, al, hb, x, col) for A, al, hb, x in fines]
 else:
     images = brutes
 

@@ -38,6 +38,7 @@ image = (
         f"wget -q -P /LivePortrait/pw {DECOUPE}",
     )
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
+    .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
 )
 
 app = modal.App("avirso-tete", image=image)
