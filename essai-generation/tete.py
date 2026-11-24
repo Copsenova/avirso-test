@@ -128,19 +128,20 @@ def detourer(o, taille):
     pour ne pas garder un liseré du décor ni un contour dur."""
     a = np.clip(((1 - o[..., 0]) - 0.30) / 0.5, 0, 1)
     a = np.clip(cv2.resize(a, (taille, taille), interpolation=cv2.INTER_CUBIC), 0, 1)
-    k = max(3, int(round(7 * taille / 1024)) | 1)
+    k = max(3, int(round(9 * taille / 1024)) | 1)
     a = cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
-    return cv2.GaussianBlur(a, (0, 0), 5.0 * taille / 1024)[..., None]
+    return cv2.GaussianBlur(a, (0, 0), 4.0 * taille / 1024)[..., None]
 
 
 def mesurer_tete(o):
-    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical, bas du menton."""
+    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical, hauteur du col."""
     p = o[..., 1] + o[..., 3]
     t = p.sum() + 1e-6
     ys, xs = np.mgrid[0:256, 0:256].astype(np.float32) / 256
     cx, cy = float((xs * p).sum() / t), float((ys * p).sum() / t)
-    lignes = p.sum(1)
-    bas = float(np.nonzero(lignes > 0.08 * lignes.max())[0][-1] + 1) / 256      # bas du menton
+    habits = o[..., 4].sum(1)      # première ligne où le vêtement apparaît nettement : le col
+    oui = np.nonzero(habits > 0.15 * max(habits.max(), 1e-6))[0]
+    bas = float(oui[0]) / 256 if len(oui) and habits.max() > 8 else 0.80
     return cx, cy, float(np.sqrt((((ys - cy) ** 2) * p).sum() / t)), bas
 
 
@@ -254,16 +255,24 @@ ARRIERE = np.array([[[50, 43, 40]]], np.float32) * (1 - _r) + np.array([[[9, 8, 
 _alea = np.random.default_rng(7)
 
 
-def composer(A, alpha, cx, menton):
-    """Pose la tête sur le fond. Le buste s'efface sous le menton, en se resserrant autour du cou."""
-    bas = np.clip(1 - (_fy - (menton + 0.02)) / 0.14, 0, 1); bas = bas * bas * (3 - 2 * bas)
-    cou = np.exp(-((_fx - cx) / 0.19) ** 2)
-    passe = np.clip((_fy - (menton - 0.03)) / 0.07, 0, 1)
-    alpha = alpha.reshape(TAILLE, TAILLE) * bas * ((1 - passe) + passe * cou)
-    # près du bord, la tête s'assombrit un peu : cela retire le liseré clair du décor d'origine et donne du volume
-    dedans = cv2.GaussianBlur(alpha, (0, 0), 12.0 * TAILLE / 1024)[..., None]
-    alpha = alpha[..., None]
-    avant = A.astype(np.float32) * (0.80 + 0.20 * np.clip(dedans * 1.6 - 0.3, 0, 1))
+_K_BORD = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((int(round(21 * TAILLE / 1024)) | 1,) * 2))
+
+
+def composer(A, alpha, cx, col):
+    """Pose la tête sur le fond. Le vêtement s'efface à partir du col, en se resserrant autour du cou."""
+    alpha = alpha.reshape(TAILLE, TAILLE)
+    # 1. Sur le bord, la couleur vient de l'intérieur de la tête : aucune trace du décor d'origine (pas de liseré clair).
+    dedans = cv2.erode(alpha, _K_BORD)
+    sg = 9.0 * TAILLE / 1024
+    Af = A.astype(np.float32)
+    interieur = cv2.GaussianBlur(Af * dedans[..., None], (0, 0), sg) / (cv2.GaussianBlur(dedans, (0, 0), sg)[..., None] + 1e-3)
+    m = cv2.GaussianBlur(dedans, (0, 0), 3.0 * TAILLE / 1024)[..., None]
+    avant = m * Af + (1 - m) * interieur
+    # 2. Le buste : fondu vertical à partir du col, resserré autour du cou
+    bas = np.clip(1 - (_fy - (col - 0.03)) / 0.13, 0, 1); bas = bas * bas * (3 - 2 * bas)
+    cou = np.exp(-((_fx - cx) / 0.17) ** 2)
+    passe = np.clip((_fy - (col - 0.07)) / 0.07, 0, 1)
+    alpha = (alpha * bas * ((1 - passe) + passe * cou))[..., None]
     img = alpha * avant + (1 - alpha) * ARRIERE
     img += _alea.normal(0, 1.4, (TAILLE, TAILLE, 1)).astype(np.float32)      # même grain léger sur la tête et sur le fond
     return np.clip(img, 0, 255).astype(np.uint8)
@@ -322,7 +331,8 @@ if sorties:
     mx, my, ms = lisser(M3[:, 0], 1.5), lisser(M3[:, 1], 1.5), lisser(M3[:, 2], 1.5)
     vx, vy, vs = lisser(M3[:, 0], 12), float(np.median(my)), float(np.median(ms))
     ech = np.clip(vs / ms, 0.94, 1.06)
-    menton = float(np.median(vy + ech * (M3[:, 3] - my)))
+    col = float(np.median(vy + ech * (M3[:, 3] - my)))
+    print('col du vêtement à %.0f %% de la hauteur' % (100 * col))
     print('avant stabilisation : hauteur de la tête variant de %.1f px, taille de %.1f %%' % ((my.max() - my.min()) * TAILLE, 100 * (ms.max() / ms.min() - 1)))
     for n, A in enumerate(brutes):
         e = float(ech[n])
@@ -345,7 +355,7 @@ if sorties:
                 C = cv2.addWeighted(tordre(A, fba, 0.5), 0.5, tordre(B, fab, 0.5), 0.5, 0)
                 ac = 0.5 * (tordre(aa, fba, 0.5) + tordre(ab, fab, 0.5))
                 fines.append((C, ac, 0.5 * (xa + xb)))
-        images = [composer(A, al, x, menton) for A, al, x in fines]
+        images = [composer(A, al, x, col) for A, al, x in fines]
 else:
     images = brutes
 
