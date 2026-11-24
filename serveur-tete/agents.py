@@ -75,14 +75,32 @@ def _json(texte: str) -> dict:
     return json.loads(m.group(0))
 
 
-def _appeler(client, systeme: str, contenu: list, max_tokens: int) -> dict:
-    """Appel du modèle ; une seconde tentative si la réponse n'est pas un JSON lisible."""
+SCHEMA_ANALYSTE = {"type": "object", "properties": {
+    "cheveux": {"type": "object"}, "barbe": {"type": "object"}, "peau": {"type": "object"}, "sourcils": {"type": "string"},
+    "visage": {"type": "object"}, "lunettes": {"type": "string"}, "fiabilite": {"type": "string"}, "limites": {"type": "array", "items": {"type": "string"}}},
+    "required": ["cheveux", "barbe", "peau", "visage", "fiabilite", "limites"]}
+SCHEMA_CONSEILLER = {"type": "object", "properties": {
+    "texte": {"type": "string"},
+    "points": {"type": "array", "items": {"type": "object", "properties": {"titre": {"type": "string"}, "texte": {"type": "string"}, "zone": {"type": "string", "enum": ZONES}}, "required": ["titre", "texte", "zone"]}},
+    "selection": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "pourquoi": {"type": "string"}}, "required": ["id", "pourquoi"]}}},
+    "required": ["texte", "points", "selection"]}
+
+
+def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict | None = None) -> dict:
+    """Appel du modèle. Avec un schéma, la réponse passe par un outil imposé : l'API renvoie un objet déjà structuré,
+    ce qui évite les JSON mal formés (guillemets non échappés dans un texte en français). Une seconde tentative si besoin."""
     derniere = None
     for _ in range(2):
-        r = client.messages.create(model=MODELE, max_tokens=max_tokens, system=systeme, messages=[{"role": "user", "content": contenu}])
-        texte = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+        extra = {"tools": [{"name": "repondre", "description": "Renvoie la réponse demandée, sous la forme prévue.", "input_schema": schema}],
+                 "tool_choice": {"type": "tool", "name": "repondre"}} if schema else {}
+        r = client.messages.create(model=MODELE, max_tokens=max_tokens, system=systeme, messages=[{"role": "user", "content": contenu}], **extra)
+        if getattr(r, "stop_reason", "") == "max_tokens":
+            derniere = ValueError("réponse coupée (longueur maximale atteinte)"); max_tokens = int(max_tokens * 1.5); continue
         try:
-            return _json(texte)
+            outil = next((b for b in r.content if getattr(b, "type", "") == "tool_use"), None)
+            if outil is not None and isinstance(outil.input, dict):
+                return outil.input
+            return _json("".join(b.text for b in r.content if getattr(b, "type", "") == "text"))
         except Exception as e:
             derniere = e
     raise ValueError(f"réponse illisible du modèle ({derniere})")
@@ -110,9 +128,9 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
 def analyser(client, photos: list, catalogue: list, reponses: dict | None = None) -> dict:
     """photos : contenu des fichiers (face, puis les côtés). Renvoie la description, l'analyse à afficher, les points et les fiches choisies."""
     vues = [_image(p) for p in photos[:3]]
-    description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 1500)
+    description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 2000, SCHEMA_ANALYSTE)
     cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"]} for f in catalogue]
     demande = json.dumps({"description": description, "reponses": reponses or {}, "catalogue": cat}, ensure_ascii=False)
-    conseil = nettoyer(_appeler(client, CONSIGNE_CONSEILLER, [{"type": "text", "text": demande}], 3000), catalogue)
+    conseil = nettoyer(_appeler(client, CONSIGNE_CONSEILLER, [{"type": "text", "text": demande}], 4000, SCHEMA_CONSEILLER), catalogue)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}
