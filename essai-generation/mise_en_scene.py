@@ -39,7 +39,7 @@ class Scene:
         lum = (0.114 * img[..., 0] + 0.587 * img[..., 1] + 0.299 * img[..., 2])[..., None]
         img = lum + (img - lum) * 0.96
         img = np.clip(img, 0, 1); img = img * img * (3 - 2 * img) * 0.30 + img * 0.70
-        img = img * 1.06 + (1 - lum) ** 2 * np.array([[[0.012, 0.004, -0.006]]], np.float32) + lum ** 2 * np.array([[[-0.012, 0.004, 0.018]]], np.float32)
+        img = img * 1.06 + (1 - lum) ** 2 * np.array([[[0.030, 0.008, -0.010]]], np.float32) + lum ** 2 * np.array([[[-0.012, 0.004, 0.018]]], np.float32)
         # 4. lumière : principale d'un côté (gauche de l'image), l'autre côté dans l'ombre ; le cou s'éteint vers le bas
         u = np.clip((fx - cx) / 0.20, -1, 1) * 0.5 + 0.5
         cle = 1.08 - 0.26 * (u * u * (3 - 2 * u))
@@ -48,12 +48,14 @@ class Scene:
         img = img * cle[..., None]
         # le vêtement devient une silhouette : presque noir, sans couleur ; on ne voit plus ce que la personne porte
         gris = (0.114 * img[..., 0] + 0.587 * img[..., 1] + 0.299 * img[..., 2])[..., None]
-        silhouette = np.clip(gris, 0, 1) * 0.16 + np.array([[[0.060, 0.050, 0.046]]], np.float32)
+        silhouette = np.clip(gris, 0, 1) * 0.04 + np.array([[[0.030, 0.018, 0.014]]], np.float32)      # noir à peine bleuté : une silhouette, plus un vêtement
         img = img * (1 - ombre[..., None]) + silhouette * ombre[..., None]
         # 5. contre-jour : un liseré clair et froid sur le bord du côté sombre
         bande = np.clip(a - cv2.GaussianBlur(cv2.erode(a, self.k_lis), (0, 0), 7 * sg), 0, 1)
-        liser = bande * np.clip((fx - cx) / 0.10, 0, 1) * (1 - 0.6 * v)
-        img += liser[..., None] * np.array([[[0.22, 0.19, 0.17]]], np.float32)
+        # contre-jour bleu des deux côtés (plus fort du côté sombre), qui dessine aussi les épaules
+        cote = np.clip(np.abs(fx - cx) / 0.10, 0, 1) * np.where(fx > cx, 1.0, 0.55)
+        liser = bande * cote * (1 - 0.35 * v)
+        img += liser[..., None] * np.array([[[0.60, 0.30, 0.14]]], np.float32)
         # 6. sortie : la personne seule, avec sa transparence (bord adouci)
         a3 = cv2.GaussianBlur(a, (0, 0), 1.2 * sg)
         return np.dstack([np.clip(img, 0, 1) * 255.0, a3 * 255.0]).astype(np.uint8)
