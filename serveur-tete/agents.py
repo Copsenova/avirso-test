@@ -37,7 +37,10 @@ Règles :
 }"""
 
 CONSIGNE_CONSEILLER = """Tu es le visagiste d'AVIRSO. Tu reçois la description d'une personne faite par l'analyste visuel, ses éventuelles réponses,
-et le catalogue des fiches sourcées de la bibliothèque AVIRSO (numéro, sujet, titre, texte, niveau de la source).
+et le catalogue des fiches sourcées de la bibliothèque AVIRSO (numéro, sujet, titre, texte, niveau de la source, nature de la fiche, mois de relevé).
+La nature dit ce que vaut chaque fiche : « Établi » (autorité de santé ou large consensus), « Études publiées », « Avis médical »,
+« Repère » (échelle conventionnelle), « Savoir-faire » (pratique de professionnels ou de marques, non testée), « Hypothèse » (science débattue),
+« Tendance · mois année » (mode du moment, pas une preuve).
 
 Ta tâche :
 1. Choisir dans le catalogue de 8 à 20 fiches vraiment utiles à cette personne (par exemple : fiches cheveux crépus et coiffures protectrices
@@ -53,6 +56,8 @@ Ta tâche :
 
 Règles : aucune note de beauté, aucun défaut, aucun diagnostic médical, aucune marque de produit, rien sur l'origine ou l'âge.
 Les conseils viennent des fiches choisies : n'en invente pas d'autres.
+Ne présente jamais un savoir-faire, une hypothèse ou une tendance comme un fait prouvé : dis « d'après les coiffeurs », « c'est une hypothèse »,
+« c'est tendance en <mois année> ». Une tendance n'est jamais une recommandation de santé.
 Réponds uniquement par un objet JSON valide, sans texte autour :
 {"texte": "...", "points": [{"titre": "...", "texte": "...", "zone": "..."}], "selection": [{"id": 0, "pourquoi": "..."}]}"""
 
@@ -139,7 +144,7 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
     """photos : contenu des fichiers (face, puis les côtés). Renvoie la description, l'analyse à afficher, les points et les fiches choisies."""
     vues = [_image(p) for p in photos[:3]]
     description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 2000, SCHEMA_ANALYSTE)
-    cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"]} for f in catalogue]
+    cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"], "nature": f.get("nature", ""), "releve": f.get("releve", "")} for f in catalogue]
     demande = json.dumps({"description": description, "reponses": reponses or {}, "catalogue": cat}, ensure_ascii=False)
     conseil = nettoyer(_appeler(client, CONSIGNE_CONSEILLER, [{"type": "text", "text": demande}], 4000, SCHEMA_CONSEILLER), catalogue)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
