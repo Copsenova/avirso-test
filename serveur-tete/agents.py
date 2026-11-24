@@ -96,13 +96,14 @@ def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict 
         r = client.messages.create(model=MODELE, max_tokens=max_tokens, system=systeme, messages=[{"role": "user", "content": contenu}], **extra)
         if getattr(r, "stop_reason", "") == "max_tokens":
             derniere = ValueError("réponse coupée (longueur maximale atteinte)"); max_tokens = int(max_tokens * 1.5); continue
+        types = [getattr(b, "type", "?") for b in r.content]
         try:
             outil = next((b for b in r.content if getattr(b, "type", "") == "tool_use"), None)
             if outil is not None and isinstance(outil.input, dict):
                 return outil.input
             return _json("".join(b.text for b in r.content if getattr(b, "type", "") == "text"))
         except Exception as e:
-            derniere = e
+            derniere = f"{e} ; blocs reçus {types}, arrêt {getattr(r, 'stop_reason', '?')}, schéma {'oui' if schema else 'non'}"
     raise ValueError(f"réponse illisible du modèle ({derniere})")
 
 
