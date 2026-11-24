@@ -75,32 +75,37 @@ def _json(texte: str) -> dict:
     return json.loads(m.group(0))
 
 
-SCHEMA_ANALYSTE = {"type": "object", "properties": {
-    "cheveux": {"type": "object"}, "barbe": {"type": "object"}, "peau": {"type": "object"}, "sourcils": {"type": "string"},
-    "visage": {"type": "object"}, "lunettes": {"type": "string"}, "fiabilite": {"type": "string"}, "limites": {"type": "array", "items": {"type": "string"}}},
-    "required": ["cheveux", "barbe", "peau", "visage", "fiabilite", "limites"]}
-SCHEMA_CONSEILLER = {"type": "object", "properties": {
-    "texte": {"type": "string"},
-    "points": {"type": "array", "items": {"type": "object", "properties": {"titre": {"type": "string"}, "texte": {"type": "string"}, "zone": {"type": "string", "enum": ZONES}}, "required": ["titre", "texte", "zone"]}},
-    "selection": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "pourquoi": {"type": "string"}}, "required": ["id", "pourquoi"]}}},
-    "required": ["texte", "points", "selection"]}
+def _obj(props: dict) -> dict:
+    """Objet JSON strict (toutes les clés requises, aucune clé en plus), comme l'exigent les sorties structurées."""
+    return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+
+
+S = {"type": "string"}
+SCHEMA_ANALYSTE = _obj({
+    "cheveux": _obj({"texture": S, "type_boucle": S, "longueur": S, "coupe": S, "couleur": S, "remarques": S}),
+    "barbe": _obj({"presence": S, "description": S, "poils_blancs": S}),
+    "peau": _obj({"carnation": S, "sous_ton": S, "aspect_visible": S}),
+    "sourcils": S,
+    "visage": _obj({"forme": S, "traits_marquants": {"type": "array", "items": S}}),
+    "lunettes": S, "fiabilite": S, "limites": {"type": "array", "items": S}})
+SCHEMA_CONSEILLER = _obj({
+    "texte": S,
+    "points": {"type": "array", "items": _obj({"titre": S, "texte": S, "zone": {"type": "string", "enum": ZONES}})},
+    "selection": {"type": "array", "items": _obj({"id": {"type": "integer"}, "pourquoi": S})}})
 
 
 def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict | None = None) -> dict:
-    """Appel du modèle. Avec un schéma, la réponse passe par un outil imposé : l'API renvoie un objet déjà structuré,
+    """Appel du modèle. Avec un schéma, l'API contraint la réponse à un JSON valide conforme (sorties structurées),
     ce qui évite les JSON mal formés (guillemets non échappés dans un texte en français). Une seconde tentative si besoin."""
     derniere = None
     for _ in range(2):
-        extra = {"tools": [{"name": "repondre", "description": "Renvoie la réponse demandée, sous la forme prévue.", "input_schema": schema}],
-                 "tool_choice": {"type": "tool", "name": "repondre"}} if schema else {}
+        # sorties structurées : la réponse texte est un JSON conforme au schéma (passé dans le corps brut, compatible avec tout SDK récent)
+        extra = {"extra_body": {"output_config": {"format": {"type": "json_schema", "schema": schema}}}} if schema else {}
         r = client.messages.create(model=MODELE, max_tokens=max_tokens, system=systeme, messages=[{"role": "user", "content": contenu}], **extra)
         if getattr(r, "stop_reason", "") == "max_tokens":
             derniere = ValueError("réponse coupée (longueur maximale atteinte)"); max_tokens = int(max_tokens * 1.5); continue
         types = [getattr(b, "type", "?") for b in r.content]
         try:
-            outil = next((b for b in r.content if getattr(b, "type", "") == "tool_use"), None)
-            if outil is not None and isinstance(outil.input, dict):
-                return outil.input
             return _json("".join(b.text for b in r.content if getattr(b, "type", "") == "text"))
         except Exception as e:
             derniere = f"{e} ; blocs reçus {types}, arrêt {getattr(r, 'stop_reason', '?')}, schéma {'oui' if schema else 'non'}"
