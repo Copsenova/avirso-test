@@ -8,6 +8,7 @@
 # Essai sans site : modal run serveur-tete/avirso_tete.py --photos "a.jpg,b.jpg,c.jpg"
 #
 # Aucune clé n'est écrite ici : l'accès à Modal se fait par « modal token new » sur la machine qui déploie.
+import os
 import modal
 
 LP_COMMIT = "main"      # à figer sur un commit précis avant l'ouverture au public
@@ -29,7 +30,7 @@ image = (
     .pip_install(
         "torch==2.5.1", "torchvision==0.20.1", "numpy<2", "opencv-python-headless==4.10.0.84", "pyyaml", "pillow",
         "pillow-heif", "imageio[ffmpeg]", "scipy", "tqdm", "rich", "ai-edge-litert", "fastapi[standard]",
-        "python-multipart",
+        "python-multipart", "anthropic",
     )
     .run_commands(
         "git clone https://github.com/KwaiVGI/LivePortrait /LivePortrait",
@@ -39,7 +40,13 @@ image = (
     )
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
     .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
+    .add_local_file("serveur-tete/agents.py", "/root/agents.py")
+    .add_local_file("serveur-tete/savoir.json", "/root/savoir.json")
 )
+# Les agents (analyse par modèle de vision) ne s'activent que si la clé est rangée dans le secret Modal « anthropic »
+# (variable ANTHROPIC_API_KEY) et que l'on déploie avec AVEC_ANALYSE=1. Sans cela, /analyses répond « pas encore activée ».
+AVEC_ANALYSE = os.environ.get("AVEC_ANALYSE") == "1"
+SECRETS = [modal.Secret.from_name("anthropic", required_keys=["ANTHROPIC_API_KEY"])] if AVEC_ANALYSE else []
 
 app = modal.App("avirso-tete", image=image)
 
@@ -87,11 +94,26 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
         shutil.rmtree(dossier, ignore_errors=True)      # rien n'est gardé
 
 
+@app.function(timeout=300, max_containers=4, secrets=SECRETS)
+def analyser_photos(photos: list[bytes], reponses: dict | None = None) -> dict:
+    """Analyste, chercheur et conseiller : description de l'apparence, choix des fiches sourcées, analyse à afficher. Rien n'est gardé."""
+    import json, sys, time
+    sys.path.insert(0, "/root")
+    t0 = time.time()
+    try:
+        import anthropic, agents
+        r = agents.analyser(anthropic.Anthropic(), photos, json.load(open("/root/savoir.json", encoding="utf-8")), reponses)
+        r["secondes"] = round(time.time() - t0, 1)
+        return r
+    except Exception as e:
+        return {"ok": False, "erreur": "l'analyse a échoué", "detail": f"{type(e).__name__}: {str(e)[:300]}"}
+
+
 @app.function(max_containers=2)
 @modal.concurrent(max_inputs=20)
 @modal.asgi_app()
 def site():
-    from fastapi import FastAPI, File, HTTPException, UploadFile
+    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
 
     web = FastAPI(title="AVIRSO tête", docs_url=None, redoc_url=None)
@@ -99,7 +121,7 @@ def site():
 
     @web.get("/")
     def accueil():
-        return {"service": "avirso-tete", "etat": "en marche"}
+        return {"service": "avirso-tete", "etat": "en marche", "analyse": AVEC_ANALYSE}
 
     @web.post("/reveil")
     async def reveil():
@@ -120,6 +142,30 @@ def site():
             contenus.append(c)
         appel = await fabriquer.spawn.aio(contenus)
         return {"id": appel.object_id}
+
+    @web.post("/analyses")
+    async def creer_analyse(photos: list[UploadFile] = File(...), reponses: str = Form("{}")):
+        import json
+        if not AVEC_ANALYSE:
+            raise HTTPException(503, "analyse pas encore activée")
+        if not 1 <= len(photos) <= MAX_PHOTOS:
+            raise HTTPException(400, f"envoyez de 1 à {MAX_PHOTOS} photos")
+        contenus = []
+        for p in photos:
+            c = await p.read()
+            if len(c) > MAX_OCTETS:
+                raise HTTPException(413, "photo trop lourde (12 Mo au plus)")
+            contenus.append(c)
+        try:
+            rep = json.loads(reponses) if reponses else {}
+        except Exception:
+            rep = {}
+        appel = await analyser_photos.spawn.aio(contenus, rep if isinstance(rep, dict) else {})
+        return {"id": appel.object_id}
+
+    @web.get("/analyses/{ident}")
+    async def lire_analyse(ident: str):
+        return await lire(ident)
 
     @web.get("/taches/{ident}")
     async def lire(ident: str):
