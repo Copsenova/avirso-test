@@ -165,7 +165,12 @@ def site():
             rep = json.loads(reponses) if reponses else {}
         except Exception:
             rep = {}
-        appel = await analyser_photos.spawn.aio(contenus, rep if isinstance(rep, dict) else {})
+        # seules deux clés passent : les objectifs choisis dans une liste fermée, et un message court de la personne
+        rep = rep if isinstance(rep, dict) else {}
+        permis = {"valeur", "coupe", "barbe", "peau", "maquillage", "lunettes", "decouvrir"}
+        rep = {"objectifs": [o for o in rep.get("objectifs", []) if isinstance(o, str) and o in permis][:7],
+               "message": rep.get("message", "")[:300] if isinstance(rep.get("message"), str) else ""}
+        appel = await analyser_photos.spawn.aio(contenus, rep)
         return {"id": appel.object_id}
 
     @web.get("/analyses/{ident}")
