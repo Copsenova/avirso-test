@@ -24,6 +24,14 @@ DECOUPE = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfi
 ORIGINES = ["https://copsenova.github.io", "http://127.0.0.1:5173", "http://localhost:5173"]
 MAX_PHOTOS, MAX_OCTETS = 5, 12 * 1024 * 1024
 
+# Les agents (analyse par modèle de vision) ne s'activent que si la clé est rangée dans le secret Modal « anthropic »
+# (variable ANTHROPIC_API_KEY) et que l'on déploie avec AVEC_ANALYSE=1. Sans cela, /analyses répond « pas encore activée ».
+AVEC_ANALYSE = os.environ.get("AVEC_ANALYSE") == "1"
+# Nom du secret Modal : « anthropic » par défaut ; SECRET_ANTHROPIC=<nom> au déploiement si le secret porte un autre nom.
+NOM_SECRET = os.environ.get("SECRET_ANTHROPIC", "anthropic")
+SECRETS = [modal.Secret.from_name(NOM_SECRET, required_keys=["ANTHROPIC_API_KEY"])] if AVEC_ANALYSE else []
+# Ces deux réglages sont relus dans le conteneur : on les inscrit dans l’image, sinon le serveur en marche les croirait absents.
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "wget", "ffmpeg", "libgl1", "libglib2.0-0")
@@ -38,16 +46,12 @@ image = (
         *[f"wget -q -P /LivePortrait/pw {POIDS}/{f}" for f in FICHIERS],
         f"wget -q -P /LivePortrait/pw {DECOUPE}",
     )
+    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET})
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
     .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
     .add_local_file("serveur-tete/agents.py", "/root/agents.py")
     .add_local_file("serveur-tete/savoir.json", "/root/savoir.json")
 )
-# Les agents (analyse par modèle de vision) ne s'activent que si la clé est rangée dans le secret Modal « anthropic »
-# (variable ANTHROPIC_API_KEY) et que l'on déploie avec AVEC_ANALYSE=1. Sans cela, /analyses répond « pas encore activée ».
-AVEC_ANALYSE = os.environ.get("AVEC_ANALYSE") == "1"
-# Nom du secret Modal : « anthropic » par défaut ; SECRET_ANTHROPIC=<nom> au déploiement si le secret porte un autre nom.
-SECRETS = [modal.Secret.from_name(os.environ.get("SECRET_ANTHROPIC", "anthropic"), required_keys=["ANTHROPIC_API_KEY"])] if AVEC_ANALYSE else []
 
 app = modal.App("avirso-tete", image=image)
 
