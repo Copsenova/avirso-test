@@ -32,6 +32,16 @@ TAILLE = int(os.environ.get('TAILLE', 1024))
 FOND = os.environ.get('FOND', '1') == '1'
 IPS = int(os.environ.get('IPS', 40))        # images par seconde de l'animation
 HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
+COTE = int(os.environ.get('COTE', 0))      # côté des images écrites (0 : TAILLE)
+LEGER = os.environ.get('LEGER', '0') == '1'      # serveur : ni vidéo ni planche de contrôle
+T_DEBUT = time.time()
+_t = [T_DEBUT]
+
+
+def etape(nom):
+    print('temps %s : %.1f s' % (nom, time.time() - _t[0])); _t[0] = time.time()
+
+
 CADRE = os.environ.get('CADRE')
 CADRE = [float(v) for v in CADRE.split(',')] if CADRE else None
 
@@ -44,6 +54,7 @@ W = load_model('pw/warping_module.pth', cfg, dev, 'warping_module')
 G = load_model('pw/spade_generator.pth', cfg, dev, 'spade_generator')
 S = load_model('pw/stitching_retargeting_module.pth', cfg, dev, 'stitching_retargeting_module')
 
+etape('modèles')
 sortie = sys.argv[1]
 chemins = sys.argv[2:]
 assert chemins, 'donnez au moins une photo'
@@ -266,6 +277,7 @@ def vetement(o, taille):
     return np.clip(cv2.resize(o[..., 4] + o[..., 5], (taille, taille), interpolation=cv2.INTER_CUBIC), 0, 1)
 
 
+etape('photos')
 # ---------- 4. toutes les images ----------
 angles = np.arange(lacets[0] - MARGE, lacets[-1] + MARGE + 1e-6, PAS)
 brutes, sorties, durees = [], [], []
@@ -310,6 +322,7 @@ def lisser(v, sigma):
     return np.convolve(np.pad(v, r, mode='edge'), k, mode='valid')
 
 
+etape('angles')
 # ---------- 5. stabilisation et fond ----------
 # La tête ne doit ni monter, ni descendre, ni changer de taille pendant qu'elle tourne : on mesure sa place sur
 # chaque image, et on recale chaque image sur une trajectoire régulière (hauteur et taille fixes, côté lissé).
@@ -323,6 +336,7 @@ if sorties:
         f = flot(gris(brutes[n]), gris(brutes[n + 1]))
         visage = cv2.resize(sorties[n][..., 3], (TAILLE, TAILLE), interpolation=cv2.INTER_LINEAR) > 0.6
         dy.append(float(np.median(f[..., 1][visage])) if visage.sum() > 500 else 0.0)
+    etape('stabilisation')
     Y = np.cumsum(dy)
     n_ref = int(np.argmin(np.abs(angles - ref_lacet)))
     Y = Y - Y[n_ref]
@@ -354,7 +368,9 @@ if sorties:
                 ac = 0.5 * (tordre(aa, fba, 0.5) + tordre(ab, fab, 0.5))
                 hc = 0.5 * (tordre(ha, fba, 0.5) + tordre(hb, fab, 0.5))
                 fines.append((C, ac, hc, 0.5 * (xa + xb)))
+        etape('intermédiaires')
         images = [scene.composer(A, al, hb, x, col) for A, al, hb, x in fines]
+        etape('mise en scène')
 else:
     images = brutes
 
@@ -364,7 +380,13 @@ os.makedirs(os.path.dirname(sortie) or '.', exist_ok=True)
 # La vidéo et la planche de contrôle la montrent sur un fond de studio.
 if images and images[0].shape[2] == 4:
     for n, im in enumerate(images):
-        cv2.imwrite(f'{sortie}_{n:03d}.webp', im, [cv2.IMWRITE_WEBP_QUALITY, 92])
+        if COTE and COTE != TAILLE:
+            im = cv2.resize(im, (COTE, COTE), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(f'{sortie}_{n:03d}.webp', im, [cv2.IMWRITE_WEBP_QUALITY, 82 if LEGER else 92])
+    etape('écriture')
+    print('temps total : %.1f s' % (time.time() - T_DEBUT))
+    if LEGER:
+        sys.exit(0)
     images = [scene.sur_fond(im) for im in images]
 else:
     for n, im in enumerate(images):

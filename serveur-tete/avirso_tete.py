@@ -44,7 +44,7 @@ image = (
 app = modal.App("avirso-tete", image=image)
 
 
-@app.function(gpu="T4", timeout=900, max_containers=1, scaledown_window=60)
+@app.function(gpu="T4", cpu=8.0, memory=8192, timeout=900, max_containers=1, scaledown_window=60)
 def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
     """Fabrique la suite d'images. `photos` : contenu des fichiers. Renvoie les images (WebP) et leurs angles."""
     import base64, glob, os, re, shutil, subprocess, tempfile, time
@@ -60,7 +60,7 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
             chemins.append(ch)
         r = subprocess.run(
             ["python", "tete.py", os.path.join(dossier, "t"), *chemins],
-            cwd="/LivePortrait", capture_output=True, text=True, env={**os.environ, "TAILLE": "1024"},
+            cwd="/LivePortrait", capture_output=True, text=True, env={**os.environ, "TAILLE": "1024", "COTE": str(cote), "LEGER": "1"},
         )
         journal = [l for l in r.stdout.splitlines() if l.strip()]
         if r.returncode != 0:
@@ -75,13 +75,12 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
             return {"ok": False, "erreur": "aucune image produite", "journal": journal[-12:]}
         images = []
         for f in fichiers:
-            im = cv2.resize(cv2.imread(f, cv2.IMREAD_UNCHANGED), (cote, cote), interpolation=cv2.INTER_AREA)      # la transparence est gardée
-            ok, b = cv2.imencode(".webp", im, [cv2.IMWRITE_WEBP_QUALITY, 82])
-            images.append(base64.b64encode(b.tobytes()).decode())
+            images.append(base64.b64encode(open(f, "rb").read()).decode())      # déjà à la bonne taille, transparence gardée
         n = len(images)
         angles = [bornes[0] + (bornes[1] - bornes[0]) * k / max(n - 1, 1) for k in range(n)]
         return {"ok": True, "angles": angles, "images": images, "cote": cote, "transparent": bool(images) and fichiers[0].endswith(".webp"), "secondes": round(time.time() - t0, 1),
-                "journal": [l for l in journal if "photo" in l or "inclinaison" in l or "hochement" in l][-8:]}
+                "journal": [l for l in journal if "photo" in l or "inclinaison" in l or "hochement" in l][-8:],
+                "temps": [l for l in journal if l.startswith("temps") or "s par image" in l]}
     finally:
         shutil.rmtree(dossier, ignore_errors=True)      # rien n'est gardé
 
