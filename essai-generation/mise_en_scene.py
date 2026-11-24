@@ -1,9 +1,10 @@
 # AVIRSO — mise en scène du portrait : la tête seule, éclairée comme sur un plateau, sur un fond qui se fond dans la page.
 # Entrées : l'image de la tête (générée), la découpe de la personne et du vêtement. Aucun modèle ici : uniquement du calcul d'image.
 #   - le vêtement devient une silhouette sombre, sans couleur : on ne voit plus ce que la personne porte ;
-#   - une lumière principale vient d'un côté, l'autre côté tombe dans l'ombre, avec un liseré de contre-jour ;
-#   - l'étalonnage est celui d'une image de cinéma : contraste, ombres froides, hautes lumières chaudes ;
-#   - le fond est celui de la page (même couleur aux bords), avec une lueur derrière la tête.
+#   - la lumière est celle d'un portrait de studio : douce, un peu plus forte d'un côté, avec un léger liseré de l'autre ;
+#   - l'étalonnage reste discret : un peu de contraste, ombres légèrement froides, peau légèrement chaude ;
+#   - la sortie est la personne SEULE, avec sa transparence : c'est l'application qui pose le fond de studio derrière.
+#     Pour l'animation de contrôle (vidéo), `sur_fond` pose la même personne sur un fond de studio clair.
 import numpy as np, cv2
 
 PAGE = (19, 13, 11)          # couleur de fond de l'application (#0b0d13), en bleu-vert-rouge
@@ -18,16 +19,9 @@ class Scene:
         self.k_hab = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((int(round(9 * T / 1024)) | 1,) * 2))
         self.k_lis = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((int(round(17 * T / 1024)) | 1,) * 2))
 
-    def fond(self, cx, cy):
-        """Fond de plateau : la couleur de la page aux bords, une lueur froide derrière la tête, un faisceau venant du haut à gauche."""
-        r = np.sqrt(((self.fx - cx) / 0.46) ** 2 + ((self.fy - cy) / 0.50) ** 2)
-        lueur = np.exp(-(r ** 2) * 1.6)[..., None]
-        faisceau = (np.clip(1 - (self.fx * 0.8 + self.fy * 0.9), 0, 1) ** 2)[..., None] * np.exp(-(r ** 2) * 0.5)[..., None]
-        f = np.array([[PAGE]], np.float32) + lueur * np.array([[[30, 22, 17]]], np.float32) + faisceau * np.array([[[22, 24, 30]]], np.float32)
-        return f
-
     def composer(self, A, alpha, habit, cx, col):
-        """A : image (bleu-vert-rouge). alpha : personne (0 à 1). habit : vêtement (0 à 1). cx : milieu du cou. col : hauteur du col."""
+        """A : image (bleu-vert-rouge). alpha : personne (0 à 1). habit : vêtement (0 à 1). cx : milieu du cou. col : hauteur du col.
+        Renvoie la personne éclairée, avec sa transparence (4 canaux : bleu, vert, rouge, alpha)."""
         T, fx, fy = self.T, self.fx, self.fy
         alpha = alpha.reshape(T, T).astype(np.float32); habit = habit.reshape(T, T).astype(np.float32)
         sg = T / 1024
@@ -43,26 +37,33 @@ class Scene:
         img = (m * Af + (1 - m) * inter) / 255.0
         # 3. étalonnage : un peu moins de couleur, plus de contraste, ombres froides et hautes lumières chaudes
         lum = (0.114 * img[..., 0] + 0.587 * img[..., 1] + 0.299 * img[..., 2])[..., None]
-        img = lum + (img - lum) * 0.90
-        img = np.clip(img, 0, 1); img = img * img * (3 - 2 * img) * 0.55 + img * 0.45
-        img += (1 - lum) ** 2 * np.array([[[0.020, 0.006, -0.012]]], np.float32) + lum ** 2 * np.array([[[-0.020, 0.004, 0.026]]], np.float32)
+        img = lum + (img - lum) * 0.96
+        img = np.clip(img, 0, 1); img = img * img * (3 - 2 * img) * 0.30 + img * 0.70
+        img = img * 1.06 + (1 - lum) ** 2 * np.array([[[0.012, 0.004, -0.006]]], np.float32) + lum ** 2 * np.array([[[-0.012, 0.004, 0.018]]], np.float32)
         # 4. lumière : principale d'un côté (gauche de l'image), l'autre côté dans l'ombre ; le cou s'éteint vers le bas
         u = np.clip((fx - cx) / 0.20, -1, 1) * 0.5 + 0.5
-        cle = 1.16 - 0.64 * (u * u * (3 - 2 * u))
+        cle = 1.08 - 0.26 * (u * u * (3 - 2 * u))
         v = np.clip((fy - (col - 0.07)) / 0.12, 0, 1)
-        cle = cle * (1 - 0.45 * v * v)
+        cle = cle * (1 - 0.30 * v * v)
         img = img * cle[..., None]
         # le vêtement devient une silhouette : presque noir, sans couleur ; on ne voit plus ce que la personne porte
         gris = (0.114 * img[..., 0] + 0.587 * img[..., 1] + 0.299 * img[..., 2])[..., None]
-        silhouette = np.clip(gris, 0, 1) * 0.10 + np.array([[[0.050, 0.036, 0.030]]], np.float32)
+        silhouette = np.clip(gris, 0, 1) * 0.16 + np.array([[[0.060, 0.050, 0.046]]], np.float32)
         img = img * (1 - ombre[..., None]) + silhouette * ombre[..., None]
         # 5. contre-jour : un liseré clair et froid sur le bord du côté sombre
         bande = np.clip(a - cv2.GaussianBlur(cv2.erode(a, self.k_lis), (0, 0), 7 * sg), 0, 1)
         liser = bande * np.clip((fx - cx) / 0.10, 0, 1) * (1 - 0.6 * v)
-        img += liser[..., None] * np.array([[[0.50, 0.40, 0.33]]], np.float32)
-        # 6. pose sur le fond, puis même grain léger sur le tout
-        a3 = cv2.GaussianBlur(a, (0, 0), 1.2 * sg)[..., None]
-        cy = col - 0.30
-        sortie = a3 * np.clip(img, 0, 1) * 255.0 + (1 - a3) * self.fond(cx, cy)
-        sortie += self.alea.normal(0, 1.3, (T, T, 1)).astype(np.float32)
-        return np.clip(sortie, 0, 255).astype(np.uint8)
+        img += liser[..., None] * np.array([[[0.22, 0.19, 0.17]]], np.float32)
+        # 6. sortie : la personne seule, avec sa transparence (bord adouci)
+        a3 = cv2.GaussianBlur(a, (0, 0), 1.2 * sg)
+        return np.dstack([np.clip(img, 0, 1) * 255.0, a3 * 255.0]).astype(np.uint8)
+
+    def sur_fond(self, bgra, cx=0.5, cy=0.40):
+        """Pour la vidéo de contrôle : la personne sur un fond de studio (clair derrière la tête, sombre vers les bords et le bas)."""
+        fx, fy = self.fx, self.fy
+        r = np.sqrt(((fx - cx) / 0.62) ** 2 + ((fy - cy) / 0.62) ** 2)
+        k = np.exp(-(r ** 2) * 1.5)[..., None]
+        fond = np.array([[PAGE]], np.float32) * (1 - k) + np.array([[[178, 160, 140]]], np.float32) * k
+        a = bgra[..., 3:4].astype(np.float32) / 255
+        out = a * bgra[..., :3].astype(np.float32) + (1 - a) * fond + self.alea.normal(0, 1.2, (self.T, self.T, 1)).astype(np.float32)
+        return np.clip(out, 0, 255).astype(np.uint8)

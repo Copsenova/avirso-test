@@ -65,7 +65,7 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
         journal = [l for l in r.stdout.splitlines() if l.strip()]
         if r.returncode != 0:
             return {"ok": False, "erreur": "le calcul a échoué", "detail": (r.stderr or "")[-800:], "journal": journal[-12:]}
-        fichiers = sorted(glob.glob(os.path.join(dossier, "t_[0-9]*.jpg")))
+        fichiers = sorted(glob.glob(os.path.join(dossier, "t_[0-9]*.webp"))) or sorted(glob.glob(os.path.join(dossier, "t_[0-9]*.jpg")))
         bornes = None
         for l in journal:
             m = re.search(r"de ([+-][\d.]+)° à ([+-][\d.]+)°", l)
@@ -75,12 +75,12 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
             return {"ok": False, "erreur": "aucune image produite", "journal": journal[-12:]}
         images = []
         for f in fichiers:
-            im = cv2.resize(cv2.imread(f), (cote, cote), interpolation=cv2.INTER_AREA)
+            im = cv2.resize(cv2.imread(f, cv2.IMREAD_UNCHANGED), (cote, cote), interpolation=cv2.INTER_AREA)      # la transparence est gardée
             ok, b = cv2.imencode(".webp", im, [cv2.IMWRITE_WEBP_QUALITY, 82])
             images.append(base64.b64encode(b.tobytes()).decode())
         n = len(images)
         angles = [bornes[0] + (bornes[1] - bornes[0]) * k / max(n - 1, 1) for k in range(n)]
-        return {"ok": True, "angles": angles, "images": images, "cote": cote, "secondes": round(time.time() - t0, 1),
+        return {"ok": True, "angles": angles, "images": images, "cote": cote, "transparent": bool(images) and fichiers[0].endswith(".webp"), "secondes": round(time.time() - t0, 1),
                 "journal": [l for l in journal if "photo" in l or "inclinaison" in l or "hochement" in l][-8:]}
     finally:
         shutil.rmtree(dossier, ignore_errors=True)      # rien n'est gardé

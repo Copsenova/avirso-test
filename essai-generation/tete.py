@@ -360,8 +360,15 @@ else:
 
 print(f'{len(images)} images de {TAILLE} px, de {angles[0]:+.1f}° à {angles[-1]:+.1f}°, {np.mean(durees):.2f} s par image (max {np.max(durees):.2f}) sur {dev}')
 os.makedirs(os.path.dirname(sortie) or '.', exist_ok=True)
-for n, im in enumerate(images):
-    cv2.imwrite(f'{sortie}_{n:03d}.jpg', im, [cv2.IMWRITE_JPEG_QUALITY, 92])
+# Avec la mise en scène, chaque image est la personne seule avec sa transparence (WebP) : c'est l'application qui pose le fond.
+# La vidéo et la planche de contrôle la montrent sur un fond de studio.
+if images and images[0].shape[2] == 4:
+    for n, im in enumerate(images):
+        cv2.imwrite(f'{sortie}_{n:03d}.webp', im, [cv2.IMWRITE_WEBP_QUALITY, 92])
+    images = [scene.sur_fond(im) for im in images]
+else:
+    for n, im in enumerate(images):
+        cv2.imwrite(f'{sortie}_{n:03d}.jpg', im, [cv2.IMWRITE_JPEG_QUALITY, 92])
 choix = [0, len(images) // 4, len(images) // 2, 3 * len(images) // 4, len(images) - 1]
 cv2.imwrite(f'{sortie}_planche.jpg', np.concatenate([cv2.resize(images[n], (512, 512), interpolation=cv2.INTER_AREA) for n in choix], 1))
 for ph in photos:
