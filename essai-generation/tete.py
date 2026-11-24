@@ -5,12 +5,13 @@
 #      Chaque angle affiché part de la vraie photo la plus proche : le modèle invente le moins possible.
 #   2. Le grain fin (cheveux, barbe, peau) est repris de la vraie photo en haute définition, déplacé au
 #      même endroit par flot optique (OpenCV), puis posé sur l'image générée. Rien n'est inventé à cette étape.
-#   3. Entre deux vraies photos, on passe de l'une à l'autre par une courte transition recalée.
+#   3. Entre deux vraies photos, chaque image est un mélange recalé des deux, dosé selon l'angle : pas de saut.
+#      L'expression et le regard sont ceux de la photo la plus de face, pour toutes les images.
 #   4. La tête est détourée (modèle « selfie multiclass » de MediaPipe, Apache 2.0) quand c'est possible.
 #
 # À lancer depuis le dossier de LivePortrait :
 #   python tete.py sortie photo1 photo2 photo3
-# Réglages par variables d'environnement : PAS (degrés entre deux images, 1.5), MARGE (degrés au-delà de la
+# Réglages par variables d'environnement : PAS (degrés entre deux images, 1), MARGE (degrés au-delà de la
 # photo la plus tournée, 8), TAILLE (côté des images produites, 1024), FOND (1 pour détourer, 0 sinon).
 # Les images produites sont générées par un modèle : ce ne sont pas des photos.
 import os, sys, time, yaml, numpy as np, cv2, torch
@@ -23,11 +24,11 @@ except Exception:
 from src.utils.helper import load_model
 from src.utils.camera import headpose_pred_to_degree, get_rotation_matrix
 
-PAS = float(os.environ.get('PAS', 1.5))
+PAS = float(os.environ.get('PAS', 1.0))
 MARGE = float(os.environ.get('MARGE', 8))
 TAILLE = int(os.environ.get('TAILLE', 1024))
 FOND = os.environ.get('FOND', '1') == '1'
-RECOUVRE = 2.5          # demi-largeur, en degrés, de la transition entre deux vraies photos
+REGARD_COMMUN = os.environ.get('REGARD', 'commun') == 'commun'   # même expression et même regard pour toutes les photos
 HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
 CADRE = os.environ.get('CADRE')
 CADRE = [float(v) for v in CADRE.split(',')] if CADRE else None
@@ -74,9 +75,11 @@ def mesurer(x):
     return dict(pitch=p, yaw=y, roll=r, kp=k['kp'].reshape(1, -1, 3), exp=k['exp'].reshape(1, -1, 3), scale=k['scale'], t=t)
 
 
-def poser(k, pitch, yaw, roll, scale, t):
+def poser(k, pitch, yaw, roll, scale, t, exp_tete=None):
+    """Points du modèle pour une pose. `exp_tete` : expression exprimée dans le repère de la tête (sinon celle de la photo)."""
     R = get_rotation_matrix(pitch, yaw, roll)
-    p = (k['kp'] @ R + k['exp']) * scale[..., None]
+    e = k['exp'] if exp_tete is None else exp_tete @ R
+    p = (k['kp'] @ R + e) * scale[..., None]
     p[:, :, 0:2] += t[:, None, 0:2]
     return p
 
@@ -159,6 +162,11 @@ if len(photos) > 1 and np.min(np.diff(lacets)) < 4:
     print('attention : deux photos ont presque le même angle')
 ech_c = torch.stack([p['k']['scale'] for p in photos]).mean(0)
 t_c = torch.stack([p['k']['t'] for p in photos]).mean(0)
+ref = photos[int(np.argmin(np.abs(lacets)))]          # la photo la plus de face donne l'expression et le regard
+with torch.no_grad():
+    Rref = get_rotation_matrix(ref['k']['pitch'], ref['k']['yaw'], ref['k']['roll'])
+    EXP_TETE = ref['k']['exp'] @ Rref.transpose(1, 2) if REGARD_COMMUN else None
+print('expression et regard :', 'ceux de ' + ref['nom'] + ' pour toutes les images' if REGARD_COMMUN else 'ceux de chaque photo')
 tang = lambda a: float(np.interp(a, lacets, [p['pitch'] for p in photos]))
 roul = lambda a: float(np.interp(a, lacets, [p['roll'] for p in photos]))
 
@@ -178,9 +186,19 @@ def generer(ph, kd):
 gris = lambda a: cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
 try:
     _dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
-    flot = lambda a, b: _dis.calc(a, b, None)
+    _flot = lambda a, b: _dis.calc(a, b, None)
 except AttributeError:
-    flot = lambda a, b: cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 5, 31, 5, 7, 1.5, 0)
+    _flot = lambda a, b: cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 5, 31, 5, 7, 1.5, 0)
+
+
+def flot(a, b):
+    """Déplacement de chaque point de `a` vers `b`, calculé en demi-définition puis lissé (stable d'une image à l'autre)."""
+    d = TAILLE // 2
+    f = _flot(cv2.resize(a, (d, d), interpolation=cv2.INTER_AREA), cv2.resize(b, (d, d), interpolation=cv2.INTER_AREA))
+    f = cv2.resize(f, (TAILLE, TAILLE), interpolation=cv2.INTER_LINEAR) * (TAILLE / d)
+    return cv2.GaussianBlur(f, (0, 0), 4.0 * TAILLE / 1024)
+
+
 _gx, _gy = np.meshgrid(np.arange(TAILLE, dtype=np.float32), np.arange(TAILLE, dtype=np.float32))
 
 
@@ -211,17 +229,9 @@ ARRIERE = (np.array([[[26, 20, 18]]], np.float32) * (1 - _y) + np.array([[[12, 1
 BAS = np.clip((0.985 - _y) / 0.13, 0, 1)
 
 
-def finir(bgr):
-    if classes is None or not FOND:
-        return bgr
-    a = detourer(bgr) * BAS      # le buste se fond dans le fond vers le bas de l'image
-    return (a * bgr.astype(np.float32) + (1 - a) * ARRIERE).astype(np.uint8)
-
-
 # ---------- 4. toutes les images ----------
 angles = np.arange(lacets[0] - MARGE, lacets[-1] + MARGE + 1e-6, PAS)
-milieux = (lacets[:-1] + lacets[1:]) / 2
-images, durees = [], []
+brutes, alphas, durees = [], [], []
 with torch.no_grad():
     t0 = time.time()
     for ph in photos:      # image reconstruite à la pose de la photo, puis vraie photo calée dessus
@@ -231,29 +241,37 @@ with torch.no_grad():
 
     def vue(i, a):
         ph = photos[i]
-        kd = poser(ph['k'], deg(tang(a)), deg(a), deg(roul(a)), ech_c, t_c)
+        kd = poser(ph['k'], deg(tang(a)), deg(a), deg(roul(a)), ech_c, t_c, EXP_TETE)
         return grain(ph, generer(ph, kd))
 
     for a in angles:
         t0 = time.time()
-        i = int(np.argmin(np.abs(lacets - a)))
-        j = None
-        if len(milieux):
-            q = int(np.argmin(np.abs(milieux - a)))
-            if abs(a - milieux[q]) < RECOUVRE:
-                i, j = q, q + 1
-        A = vue(i, a)
-        if j is not None:      # transition : les deux images glissent l'une vers l'autre, puis se fondent
-            B = vue(j, a)
-            w = (a - (milieux[i] - RECOUVRE)) / (2 * RECOUVRE)
-            w = float(w * w * (3 - 2 * w))
+        i = int(np.clip(np.searchsorted(lacets, a) - 1, 0, len(photos) - 1))
+        w = 0.0
+        if len(photos) > 1 and lacets[0] < a < lacets[-1]:
+            w = float((a - lacets[i]) / (lacets[i + 1] - lacets[i]))
+        elif a >= lacets[-1]:
+            i = len(photos) - 1
+        if w < 0.02:
+            A = vue(i, a)
+        elif w > 0.98:
+            A = vue(i + 1, a)
+        else:      # mélange recalé : A glisse d'une fraction w vers B, B d'une fraction 1-w vers A, puis fondu
+            A, B = vue(i, a), vue(i + 1, a)
             fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
-            # A glisse d'une fraction w vers B, B d'une fraction 1-w vers A (déformation inverse approchée)
-            A2 = tordre(A, fba, w)
-            B2 = tordre(B, fab, 1 - w)
-            A = cv2.addWeighted(A2, 1 - w, B2, w, 0)
-        images.append(finir(A))
+            A = cv2.addWeighted(tordre(A, fba, w), 1 - w, tordre(B, fab, 1 - w), w, 0)
+        brutes.append(A)
+        if classes is not None and FOND:
+            alphas.append(detourer(A).astype(np.float32))
         durees.append(time.time() - t0)
+
+# le contour est lissé d'une image à l'autre pour ne pas trembler
+images = []
+for n, A in enumerate(brutes):
+    if alphas:
+        a = 0.5 * alphas[n] + 0.25 * alphas[max(n - 1, 0)] + 0.25 * alphas[min(n + 1, len(alphas) - 1)]
+        A = (a * BAS * A.astype(np.float32) + (1 - a * BAS) * ARRIERE).astype(np.uint8)
+    images.append(A)
 
 print(f'{len(images)} images de {TAILLE} px, de {angles[0]:+.1f}° à {angles[-1]:+.1f}°, {np.mean(durees):.2f} s par image (max {np.max(durees):.2f}) sur {dev}')
 os.makedirs(os.path.dirname(sortie) or '.', exist_ok=True)
