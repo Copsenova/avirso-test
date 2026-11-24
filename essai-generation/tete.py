@@ -13,7 +13,7 @@
 # À lancer depuis le dossier de LivePortrait :
 #   python tete.py sortie photo1 photo2 photo3
 # Réglages par variables d'environnement : PAS (degrés entre deux images, 1), MARGE (degrés au-delà de la
-# photo la plus tournée, 5), TAILLE (côté des images produites, 1024), FOND (1 pour détourer, 0 sinon).
+# photo la plus tournée, 3), TAILLE (côté des images produites, 1024), FOND (1 pour détourer, 0 sinon).
 # Les images produites sont générées par un modèle : ce ne sont pas des photos.
 import os, sys, time, yaml, numpy as np, cv2, torch
 from PIL import Image, ImageOps
@@ -26,7 +26,7 @@ from src.utils.helper import load_model
 from src.utils.camera import headpose_pred_to_degree, get_rotation_matrix
 
 PAS = float(os.environ.get('PAS', 1.0))
-MARGE = float(os.environ.get('MARGE', 5))
+MARGE = float(os.environ.get('MARGE', 3))
 TAILLE = int(os.environ.get('TAILLE', 1024))
 FOND = os.environ.get('FOND', '1') == '1'
 IPS = int(os.environ.get('IPS', 40))        # images par seconde de l'animation
@@ -134,7 +134,7 @@ def detourer(o, taille):
 
 
 def mesurer_tete(o):
-    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical, hauteur du col."""
+    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical, hauteur du col, milieu du cou."""
     p = o[..., 1] + o[..., 3]
     t = p.sum() + 1e-6
     ys, xs = np.mgrid[0:256, 0:256].astype(np.float32) / 256
@@ -142,7 +142,11 @@ def mesurer_tete(o):
     habits = o[..., 4].sum(1)      # première ligne où le vêtement apparaît nettement : le col
     oui = np.nonzero(habits > 0.15 * max(habits.max(), 1e-6))[0]
     bas = float(oui[0]) / 256 if len(oui) and habits.max() > 8 else 0.80
-    return cx, cy, float(np.sqrt((((ys - cy) ** 2) * p).sum() / t)), bas
+    # milieu du cou (peau, juste au-dessus du col) : en tournant, le cou n'est plus sous le milieu de la tête
+    l0, l1 = int(max(0, (bas - 0.09) * 256)), int(max(1, bas * 256))
+    peau = (o[..., 2] + o[..., 3])[l0:l1].sum(0)
+    cou = float((peau * np.arange(256)).sum() / peau.sum()) / 256 if peau.sum() > 4 else cx
+    return cx, cy, float(np.sqrt((((ys - cy) ** 2) * p).sum() / t)), bas, cou
 
 
 # ---------- 1. cadrage et mesure de chaque vraie photo ----------
@@ -182,6 +186,7 @@ t_c = torch.stack([p['k']['t'] for p in photos]).mean(0)
 # Inclinaison de la tête : la même pour toutes les images (sinon la tête hoche en tournant)
 TANG = float(np.median([p['pitch'] for p in photos]))
 ROUL = float(np.median([p['roll'] for p in photos]))
+ref_lacet = float(lacets[int(np.argmin(np.abs(lacets)))])
 print(f'inclinaison gardée pour toutes les images : tangage {TANG:+.1f}°, roulis {ROUL:+.1f}°')
 
 
@@ -255,23 +260,23 @@ ARRIERE = np.array([[[50, 43, 40]]], np.float32) * (1 - _r) + np.array([[[9, 8, 
 _alea = np.random.default_rng(7)
 
 
-_K_BORD = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((int(round(21 * TAILLE / 1024)) | 1,) * 2))
+_K_BORD = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((int(round(11 * TAILLE / 1024)) | 1,) * 2))
 
 
 def composer(A, alpha, cx, col):
-    """Pose la tête sur le fond. Le vêtement s'efface à partir du col, en se resserrant autour du cou."""
+    """Pose la tête sur le fond. Le vêtement s'efface à partir du col ; `cx` est le milieu du cou."""
     alpha = alpha.reshape(TAILLE, TAILLE)
     # 1. Sur le bord, la couleur vient de l'intérieur de la tête : aucune trace du décor d'origine (pas de liseré clair).
     dedans = cv2.erode(alpha, _K_BORD)
-    sg = 9.0 * TAILLE / 1024
+    sg = 5.0 * TAILLE / 1024
     Af = A.astype(np.float32)
     interieur = cv2.GaussianBlur(Af * dedans[..., None], (0, 0), sg) / (cv2.GaussianBlur(dedans, (0, 0), sg)[..., None] + 1e-3)
-    m = cv2.GaussianBlur(dedans, (0, 0), 3.0 * TAILLE / 1024)[..., None]
+    m = cv2.GaussianBlur(dedans, (0, 0), 2.0 * TAILLE / 1024)[..., None]
     avant = m * Af + (1 - m) * interieur
     # 2. Le buste : fondu vertical à partir du col, resserré autour du cou
     bas = np.clip(1 - (_fy - (col - 0.03)) / 0.13, 0, 1); bas = bas * bas * (3 - 2 * bas)
-    cou = np.exp(-((_fx - cx) / 0.17) ** 2)
-    passe = np.clip((_fy - (col - 0.07)) / 0.07, 0, 1)
+    cou = np.exp(-((_fx - cx) / 0.24) ** 4)      # plateau large : le cou et la nuque restent nets, seules les épaules s'effacent
+    passe = np.clip((_fy - (col - 0.02)) / 0.06, 0, 1)
     alpha = (alpha * bas * ((1 - passe) + passe * cou))[..., None]
     img = alpha * avant + (1 - alpha) * ARRIERE
     img += _alea.normal(0, 1.4, (TAILLE, TAILLE, 1)).astype(np.float32)      # même grain léger sur la tête et sur le fond
@@ -328,20 +333,29 @@ def lisser(v, sigma):
 images = []
 if sorties:
     M3 = np.array([mesurer_tete(o) for o in sorties])
-    mx, my, ms = lisser(M3[:, 0], 1.5), lisser(M3[:, 1], 1.5), lisser(M3[:, 2], 1.5)
-    vx, vy, vs = lisser(M3[:, 0], 12), float(np.median(my)), float(np.median(ms))
-    ech = np.clip(vs / ms, 0.94, 1.06)
-    col = float(np.median(vy + ech * (M3[:, 3] - my)))
+    # Hauteur : on suit le visage lui-même. Une tête qui tourne sans hocher ne déplace pas son visage vers le haut
+    # ni vers le bas ; le déplacement vertical médian du visage entre deux images voisines mesure donc le hochement.
+    dy = [0.0]
+    for n in range(len(brutes) - 1):
+        f = flot(gris(brutes[n]), gris(brutes[n + 1]))
+        visage = cv2.resize(sorties[n][..., 3], (TAILLE, TAILLE), interpolation=cv2.INTER_LINEAR) > 0.6
+        dy.append(float(np.median(f[..., 1][visage])) if visage.sum() > 500 else 0.0)
+    Y = np.cumsum(dy)
+    n_ref = int(np.argmin(np.abs(angles - ref_lacet)))
+    Y = Y - Y[n_ref]
+    mx, vx = lisser(M3[:, 0], 1.5), lisser(M3[:, 0], 12)
+    col = float(np.median(M3[:, 3] - Y / TAILLE))
+    cous = lisser(M3[:, 4], 4)
+    print('hochement mesuré avant correction : %.1f px (de %+.1f à %+.1f)' % (Y.max() - Y.min(), Y.min(), Y.max()))
     print('col du vêtement à %.0f %% de la hauteur' % (100 * col))
-    print('avant stabilisation : hauteur de la tête variant de %.1f px, taille de %.1f %%' % ((my.max() - my.min()) * TAILLE, 100 * (ms.max() / ms.min() - 1)))
     for n, A in enumerate(brutes):
-        e = float(ech[n])
-        # agrandissement e autour du centre mesuré, puis déplacement vers le centre visé
-        T = np.array([[e, 0, (vx[n] - e * mx[n]) * TAILLE], [0, e, (vy - e * my[n]) * TAILLE]], np.float32)
+        # déplacement : hauteur ramenée à celle de la photo de face, côté lissé
+        dx = float(vx[n] - mx[n]) * TAILLE
+        T = np.array([[1, 0, dx], [0, 1, -float(Y[n])]], np.float32)
         A = cv2.warpAffine(A, T, (TAILLE, TAILLE), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
         if FOND:
             alpha = cv2.warpAffine(detourer(sorties[n], TAILLE), T, (TAILLE, TAILLE), flags=cv2.INTER_LINEAR, borderValue=0)
-            images.append((A, alpha, float(vx[n])))
+            images.append((A, alpha, float(cous[n]) + dx / TAILLE))
         else:
             images.append(A)
     if FOND:
