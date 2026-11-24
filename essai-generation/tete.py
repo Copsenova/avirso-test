@@ -208,10 +208,13 @@ _y = np.linspace(0, 1, TAILLE, dtype=np.float32)[:, None, None]
 ARRIERE = (np.array([[[26, 20, 18]]], np.float32) * (1 - _y) + np.array([[[12, 10, 9]]], np.float32) * _y) * np.ones((1, TAILLE, 1), np.float32)
 
 
+BAS = np.clip((0.985 - _y) / 0.13, 0, 1)
+
+
 def finir(bgr):
     if classes is None or not FOND:
         return bgr
-    a = detourer(bgr)
+    a = detourer(bgr) * BAS      # le buste se fond dans le fond vers le bas de l'image
     return (a * bgr.astype(np.float32) + (1 - a) * ARRIERE).astype(np.uint8)
 
 
