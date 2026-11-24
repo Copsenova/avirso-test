@@ -6,13 +6,14 @@
 #   2. Le grain fin (cheveux, barbe, peau) est repris de la vraie photo en haute définition, déplacé au
 #      même endroit par flot optique (OpenCV), puis posé sur l'image générée. Rien n'est inventé à cette étape.
 #   3. Entre deux vraies photos, chaque image est un mélange recalé des deux, dosé selon l'angle : pas de saut.
-#      L'expression et le regard sont ceux de la photo la plus de face, pour toutes les images.
+#      Le regard reste celui des vraies photos (vers l'objectif) : entre deux photos, l'expression glisse de l'une à l'autre.
+#      La tête garde la même inclinaison, puis sa hauteur et sa taille sont stabilisées d'une image à l'autre.
 #   4. La tête est détourée (modèle « selfie multiclass » de MediaPipe, Apache 2.0) quand c'est possible.
 #
 # À lancer depuis le dossier de LivePortrait :
 #   python tete.py sortie photo1 photo2 photo3
 # Réglages par variables d'environnement : PAS (degrés entre deux images, 1), MARGE (degrés au-delà de la
-# photo la plus tournée, 8), TAILLE (côté des images produites, 1024), FOND (1 pour détourer, 0 sinon).
+# photo la plus tournée, 5), TAILLE (côté des images produites, 1024), FOND (1 pour détourer, 0 sinon).
 # Les images produites sont générées par un modèle : ce ne sont pas des photos.
 import os, sys, time, yaml, numpy as np, cv2, torch
 from PIL import Image, ImageOps
@@ -25,10 +26,9 @@ from src.utils.helper import load_model
 from src.utils.camera import headpose_pred_to_degree, get_rotation_matrix
 
 PAS = float(os.environ.get('PAS', 1.0))
-MARGE = float(os.environ.get('MARGE', 8))
+MARGE = float(os.environ.get('MARGE', 5))
 TAILLE = int(os.environ.get('TAILLE', 1024))
 FOND = os.environ.get('FOND', '1') == '1'
-REGARD_COMMUN = os.environ.get('REGARD', 'commun') == 'commun'   # même expression et même regard pour toutes les photos
 HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
 CADRE = os.environ.get('CADRE')
 CADRE = [float(v) for v in CADRE.split(',')] if CADRE else None
@@ -75,11 +75,10 @@ def mesurer(x):
     return dict(pitch=p, yaw=y, roll=r, kp=k['kp'].reshape(1, -1, 3), exp=k['exp'].reshape(1, -1, 3), scale=k['scale'], t=t)
 
 
-def poser(k, pitch, yaw, roll, scale, t, exp_tete=None):
-    """Points du modèle pour une pose. `exp_tete` : expression exprimée dans le repère de la tête (sinon celle de la photo)."""
+def poser(k, pitch, yaw, roll, scale, t, exp=None):
+    """Points du modèle pour une pose. `exp` : expression à donner (sinon celle de la photo)."""
     R = get_rotation_matrix(pitch, yaw, roll)
-    e = k['exp'] if exp_tete is None else exp_tete @ R
-    p = (k['kp'] @ R + e) * scale[..., None]
+    p = (k['kp'] @ R + (k['exp'] if exp is None else exp)) * scale[..., None]
     p[:, :, 0:2] += t[:, None, 0:2]
     return p
 
@@ -123,9 +122,23 @@ def boite_tete(bgr):
     return x / 256, y / 256, (x + w) / 256, (y + h) / 256
 
 
-def detourer(bgr):
-    a = np.clip(((1 - classes(bgr)[..., 0]) - 0.35) / 0.4, 0, 1)
-    return np.clip(cv2.resize(a, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_CUBIC), 0, 1)[..., None]
+def detourer(o, taille):
+    """Transparence de la personne à partir des probabilités `o` : bord rentré de quelques pixels puis adouci,
+    pour ne pas garder un liseré du décor ni un contour dur."""
+    a = np.clip(((1 - o[..., 0]) - 0.30) / 0.5, 0, 1)
+    a = np.clip(cv2.resize(a, (taille, taille), interpolation=cv2.INTER_CUBIC), 0, 1)
+    k = max(3, int(round(7 * taille / 1024)) | 1)
+    a = cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    return cv2.GaussianBlur(a, (0, 0), 3.5 * taille / 1024)[..., None]
+
+
+def mesurer_tete(o):
+    """Place et taille de la tête (cheveux et visage), en fractions de l'image : x, y du centre, écart-type vertical."""
+    p = o[..., 1] + o[..., 3]
+    t = p.sum() + 1e-6
+    ys, xs = np.mgrid[0:256, 0:256].astype(np.float32) / 256
+    cx, cy = float((xs * p).sum() / t), float((ys * p).sum() / t)
+    return cx, cy, float(np.sqrt((((ys - cy) ** 2) * p).sum() / t))
 
 
 # ---------- 1. cadrage et mesure de chaque vraie photo ----------
@@ -162,13 +175,21 @@ if len(photos) > 1 and np.min(np.diff(lacets)) < 4:
     print('attention : deux photos ont presque le même angle')
 ech_c = torch.stack([p['k']['scale'] for p in photos]).mean(0)
 t_c = torch.stack([p['k']['t'] for p in photos]).mean(0)
-ref = photos[int(np.argmin(np.abs(lacets)))]          # la photo la plus de face donne l'expression et le regard
-with torch.no_grad():
-    Rref = get_rotation_matrix(ref['k']['pitch'], ref['k']['yaw'], ref['k']['roll'])
-    EXP_TETE = ref['k']['exp'] @ Rref.transpose(1, 2) if REGARD_COMMUN else None
-print('expression et regard :', 'ceux de ' + ref['nom'] + ' pour toutes les images' if REGARD_COMMUN else 'ceux de chaque photo')
-tang = lambda a: float(np.interp(a, lacets, [p['pitch'] for p in photos]))
-roul = lambda a: float(np.interp(a, lacets, [p['roll'] for p in photos]))
+# Inclinaison de la tête : la même pour toutes les images (sinon la tête hoche en tournant)
+TANG = float(np.median([p['pitch'] for p in photos]))
+ROUL = float(np.median([p['roll'] for p in photos]))
+print(f'inclinaison gardée pour toutes les images : tangage {TANG:+.1f}°, roulis {ROUL:+.1f}°')
+
+
+def expression(a):
+    """Expression (dont le regard) à l'angle a : celle des vraies photos, glissant de l'une à l'autre entre deux photos."""
+    i = int(np.clip(np.searchsorted(lacets, a) - 1, 0, len(photos) - 1))
+    if len(photos) == 1 or a <= lacets[0]:
+        return photos[0]['k']['exp']
+    if a >= lacets[-1]:
+        return photos[-1]['k']['exp']
+    w = float((a - lacets[i]) / (lacets[i + 1] - lacets[i]))
+    return (1 - w) * photos[i]['k']['exp'] + w * photos[i + 1]['k']['exp']
 
 
 def generer(ph, kd):
@@ -231,7 +252,7 @@ BAS = np.clip((0.985 - _y) / 0.13, 0, 1)
 
 # ---------- 4. toutes les images ----------
 angles = np.arange(lacets[0] - MARGE, lacets[-1] + MARGE + 1e-6, PAS)
-brutes, alphas, durees = [], [], []
+brutes, sorties, durees = [], [], []
 with torch.no_grad():
     t0 = time.time()
     for ph in photos:      # image reconstruite à la pose de la photo, puis vraie photo calée dessus
@@ -241,7 +262,7 @@ with torch.no_grad():
 
     def vue(i, a):
         ph = photos[i]
-        kd = poser(ph['k'], deg(tang(a)), deg(a), deg(roul(a)), ech_c, t_c, EXP_TETE)
+        kd = poser(ph['k'], deg(TANG), deg(a), deg(ROUL), ech_c, t_c, expression(a))
         return grain(ph, generer(ph, kd))
 
     for a in angles:
@@ -261,17 +282,39 @@ with torch.no_grad():
             fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
             A = cv2.addWeighted(tordre(A, fba, w), 1 - w, tordre(B, fab, 1 - w), w, 0)
         brutes.append(A)
-        if classes is not None and FOND:
-            alphas.append(detourer(A).astype(np.float32))
+        if classes is not None:
+            sorties.append(classes(A))
         durees.append(time.time() - t0)
 
-# le contour est lissé d'une image à l'autre pour ne pas trembler
+
+def lisser(v, sigma):
+    v = np.asarray(v, np.float64)
+    r = int(3 * sigma) + 1
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2); k /= k.sum()
+    return np.convolve(np.pad(v, r, mode='edge'), k, mode='valid')
+
+
+# ---------- 5. stabilisation et fond ----------
+# La tête ne doit ni monter, ni descendre, ni changer de taille pendant qu'elle tourne : on mesure sa place sur
+# chaque image, et on recale chaque image sur une trajectoire régulière (hauteur et taille fixes, côté lissé).
 images = []
-for n, A in enumerate(brutes):
-    if alphas:
-        a = 0.5 * alphas[n] + 0.25 * alphas[max(n - 1, 0)] + 0.25 * alphas[min(n + 1, len(alphas) - 1)]
-        A = (a * BAS * A.astype(np.float32) + (1 - a * BAS) * ARRIERE).astype(np.uint8)
-    images.append(A)
+if sorties:
+    M3 = np.array([mesurer_tete(o) for o in sorties])
+    mx, my, ms = lisser(M3[:, 0], 1.5), lisser(M3[:, 1], 1.5), lisser(M3[:, 2], 1.5)
+    vx, vy, vs = lisser(M3[:, 0], 12), float(np.median(my)), float(np.median(ms))
+    print('avant stabilisation : hauteur de la tête variant de %.1f px, taille de %.1f %%' % ((my.max() - my.min()) * TAILLE, 100 * (ms.max() / ms.min() - 1)))
+    for n, A in enumerate(brutes):
+        e = float(np.clip(vs / ms[n], 0.94, 1.06))
+        # agrandissement e autour du centre mesuré, puis déplacement vers le centre visé
+        T = np.array([[e, 0, (vx[n] - e * mx[n]) * TAILLE], [0, e, (vy - e * my[n]) * TAILLE]], np.float32)
+        A = cv2.warpAffine(A, T, (TAILLE, TAILLE), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        if FOND:
+            alpha = detourer(sorties[n], TAILLE)
+            alpha = cv2.warpAffine(alpha, T, (TAILLE, TAILLE), flags=cv2.INTER_LINEAR, borderValue=0)[..., None] * BAS
+            A = (alpha * A.astype(np.float32) + (1 - alpha) * ARRIERE).astype(np.uint8)
+        images.append(A)
+else:
+    images = brutes
 
 print(f'{len(images)} images de {TAILLE} px, de {angles[0]:+.1f}° à {angles[-1]:+.1f}°, {np.mean(durees):.2f} s par image (max {np.max(durees):.2f}) sur {dev}')
 os.makedirs(os.path.dirname(sortie) or '.', exist_ok=True)
