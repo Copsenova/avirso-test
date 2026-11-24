@@ -22,11 +22,13 @@ Règles :
 - Aucune note de beauté, aucun défaut, aucun jugement. Les caractéristiques sont décrites, jamais corrigées.
 - Ne devine ni l'origine, ni l'âge, ni le genre, ni une maladie ou un problème de peau médical.
 - La carnation et le sous-ton servent au choix des teintes de maquillage : décris-les avec les mots d'un maquilleur.
+- La teinte Monk et la couleur des yeux sont des estimations sur photo : la lumière les fausse, dis-le dans « limites » si l'éclairage est coloré ou faible.
 - Réponds uniquement par un objet JSON valide, sans texte autour, de cette forme :
 {
  "cheveux": {"texture": "raides|ondulés|bouclés|crépus|indéterminé", "type_boucle": "1A à 4C, ou indéterminé", "longueur": "très courts|courts|mi-longs|longs|indéterminé", "coupe": "description courte", "couleur": "description courte", "remarques": "description courte"},
  "barbe": {"presence": "aucune|naissante|courte|moyenne|longue|indéterminé", "description": "forme, densité, contours", "poils_blancs": "oui|non|indéterminé"},
- "peau": {"carnation": "très claire|claire|moyenne|mate|foncée|très foncée|indéterminé", "sous_ton": "chaud|froid|neutre|olive|indéterminé", "aspect_visible": "brillance, sécheresse ou taches visibles sur les photos, ou indéterminé"},
+ "peau": {"carnation": "très claire|claire|moyenne|mate|foncée|très foncée|indéterminé", "teinte_monk": "nombre de 1 (la plus claire) à 10 (la plus foncée) sur l'échelle Monk, estimé sur les photos, ou indéterminé", "sous_ton": "chaud|froid|neutre|olive|indéterminé", "taches_de_rousseur": "aucune|quelques-unes|nombreuses|indéterminé", "rougeurs": "aucune|légères|marquées|indéterminé (la lumière et la chaleur peuvent en créer)", "aspect_visible": "brillance, sécheresse ou taches visibles sur les photos, ou indéterminé"},
+ "yeux": {"couleur": "marron foncé|marron|noisette|vert|gris|bleu|indéterminé", "cils": "courts|moyens|longs, droits ou recourbés, ou indéterminé", "forme": "en amande|ronds|tombants|paupière tombante|sans pli (monolid)|enfoncés|indéterminé"},
  "sourcils": "forme et densité",
  "visage": {"forme": "ovale|rond|carré|long|cœur|losange|triangle|indéterminé", "traits_marquants": ["2 à 4 traits décrits positivement"]},
  "lunettes": "portées|non portées",
@@ -39,7 +41,8 @@ et le catalogue des fiches sourcées de la bibliothèque AVIRSO (numéro, sujet,
 
 Ta tâche :
 1. Choisir dans le catalogue de 8 à 20 fiches vraiment utiles à cette personne (par exemple : fiches cheveux crépus et coiffures protectrices
-   pour des cheveux crépus, rasage et poils incarnés pour une barbe courte et frisée, peaux foncées pour une carnation foncée).
+   pour des cheveux crépus, rasage et poils incarnés pour une barbe courte et frisée, peaux foncées pour une carnation foncée,
+   taches de rousseur si elles sont visibles, faux cils selon la forme de l'œil, couleurs des vêtements selon les yeux).
    N'utilise que des numéros présents dans le catalogue. Pour chacune, écris en une phrase (25 mots au plus) pourquoi elle la concerne,
    en t'appuyant sur la description, sans affirmer ce que la description ne dit pas.
 2. Rédiger l'analyse affichée à l'arrivée : 110 à 170 mots, en français, au vouvoiement, chaleureuse et précise, comme un visagiste qui parle.
@@ -84,7 +87,8 @@ S = {"type": "string"}
 SCHEMA_ANALYSTE = _obj({
     "cheveux": _obj({"texture": S, "type_boucle": S, "longueur": S, "coupe": S, "couleur": S, "remarques": S}),
     "barbe": _obj({"presence": S, "description": S, "poils_blancs": S}),
-    "peau": _obj({"carnation": S, "sous_ton": S, "aspect_visible": S}),
+    "peau": _obj({"carnation": S, "teinte_monk": S, "sous_ton": S, "taches_de_rousseur": S, "rougeurs": S, "aspect_visible": S}),
+    "yeux": _obj({"couleur": S, "cils": S, "forme": S}),
     "sourcils": S,
     "visage": _obj({"forme": S, "traits_marquants": {"type": "array", "items": S}}),
     "lunettes": S, "fiabilite": S, "limites": {"type": "array", "items": S}})
