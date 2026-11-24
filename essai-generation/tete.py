@@ -91,9 +91,13 @@ def deg(v):
 # ---------- 0. découpe de la personne (sert au cadrage et au détourage) ----------
 classes = None
 try:
-    import tensorflow as tf
-    tf.config.set_visible_devices([], 'GPU')
-    _it = tf.lite.Interpreter(model_path='pw/selfie_multiclass_256x256.tflite')
+    try:      # petit moteur dédié (serveur) ; à défaut, celui de TensorFlow (Colab)
+        from ai_edge_litert.interpreter import Interpreter as _Interp
+    except Exception:
+        import tensorflow as tf
+        tf.config.set_visible_devices([], 'GPU')
+        _Interp = tf.lite.Interpreter
+    _it = _Interp(model_path='pw/selfie_multiclass_256x256.tflite')
     _it.allocate_tensors()
     _e, _s = _it.get_input_details()[0], _it.get_output_details()[0]
 
