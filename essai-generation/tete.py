@@ -34,6 +34,7 @@ IPS = int(os.environ.get('IPS', 40))        # images par seconde de l'animation
 HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
 COTE = int(os.environ.get('COTE', 0))      # côté des images écrites (0 : TAILLE)
 LEGER = os.environ.get('LEGER', '0') == '1'      # serveur : ni vidéo ni planche de contrôle
+DEMI = os.environ.get('DEMI', '0') == '1'
 FILS = int(os.environ.get('FILS', 1))      # calculs menés de front (les résultats sont les mêmes qu'avec un seul)
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -247,7 +248,8 @@ def generer(ph, kd):
         d = S['stitching'](torch.cat([ph['ks'].reshape(1, -1), kd.reshape(1, -1)], 1))
         kd = kd + d[..., :3 * n].reshape(1, n, 3)
         kd[..., :2] += d[..., 3 * n:3 * n + 2].reshape(1, 1, 2)
-        im = G(feature=W(ph['fs'], kp_source=ph['ks'], kp_driving=kd)['out'])
+        with torch.autocast('cuda', dtype=torch.float16, enabled=DEMI and dev == 'cuda'):      # demi-précision : même image à l'œil, calcul plus court
+            im = G(feature=W(ph['fs'], kp_source=ph['ks'], kp_driving=kd)['out'])
         a = (im[0].permute(1, 2, 0).clamp(0, 1).float().cpu().numpy() * 255).astype(np.uint8)
         chrono('génération', _a)
     a = cv2.cvtColor(a, cv2.COLOR_RGB2BGR)

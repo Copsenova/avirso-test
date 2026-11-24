@@ -62,7 +62,7 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
             chemins.append(ch)
         r = subprocess.run(
             ["python", "tete.py", os.path.join(dossier, "t"), *chemins],
-            cwd="/LivePortrait", capture_output=True, text=True, env={**os.environ, "TAILLE": "1024", "COTE": str(cote), "LEGER": "1", "FILS": "8"},
+            cwd="/LivePortrait", capture_output=True, text=True, env={**os.environ, "TAILLE": "1024", "COTE": str(cote), "LEGER": "1", "FILS": "8", "DEMI": "1"},
         )
         journal = [l for l in r.stdout.splitlines() if l.strip()]
         if r.returncode != 0:
