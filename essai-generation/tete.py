@@ -104,7 +104,7 @@ with torch.no_grad():
         for tour in range(3):
             k = mesurer(tenseur(cadrer(img, cx, cy, cote, 256)))
             ks = poser(k, k['pitch'], k['yaw'], k['roll'], k['scale'], k['t'])
-            centre = ks[0, :, :2].mean(0).cpu().numpy()
+            centre = k['t'][0, :2].cpu().numpy()      # place de la tête dans le cadre, de -1 à +1
             ech = float(k['scale'])
             if ECHELLE_VISEE is None or tour == 2:
                 break
@@ -118,7 +118,7 @@ with torch.no_grad():
         ph = dict(nom=os.path.basename(ch), net=net, fs=F(x), k=k, yaw=float(k['yaw']), pitch=float(k['pitch']), roll=float(k['roll']))
         ph['ks'] = poser(k, k['pitch'], k['yaw'], k['roll'], k['scale'], k['t'])
         photos.append(ph)
-        c2 = ph['ks'][0, :, :2].mean(0).cpu().numpy()
+        c2 = k['t'][0, :2].cpu().numpy()
         print(f"{ph['nom']} : lacet {ph['yaw']:+.1f}°, tangage {ph['pitch']:+.1f}°, roulis {ph['roll']:+.1f}° | "
               f"échelle {float(k['scale']):.3f}, centre {c2[0]:+.3f},{c2[1]:+.3f} | cadre {cote / min(W0, H0):.2f} du petit côté, {cote * 1.0:.0f} px")
 
