@@ -46,7 +46,8 @@ image = (
 # Les agents (analyse par modèle de vision) ne s'activent que si la clé est rangée dans le secret Modal « anthropic »
 # (variable ANTHROPIC_API_KEY) et que l'on déploie avec AVEC_ANALYSE=1. Sans cela, /analyses répond « pas encore activée ».
 AVEC_ANALYSE = os.environ.get("AVEC_ANALYSE") == "1"
-SECRETS = [modal.Secret.from_name("anthropic", required_keys=["ANTHROPIC_API_KEY"])] if AVEC_ANALYSE else []
+# Nom du secret Modal : « anthropic » par défaut ; SECRET_ANTHROPIC=<nom> au déploiement si le secret porte un autre nom.
+SECRETS = [modal.Secret.from_name(os.environ.get("SECRET_ANTHROPIC", "anthropic"), required_keys=["ANTHROPIC_API_KEY"])] if AVEC_ANALYSE else []
 
 app = modal.App("avirso-tete", image=image)
 
