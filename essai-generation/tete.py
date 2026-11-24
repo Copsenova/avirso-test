@@ -329,16 +329,29 @@ with torch.no_grad():
         ph = photos[i]
         with torch.no_grad():
             kd = poser(ph['k'], deg(TANG), deg(a), deg(ROUL), ech_c, t_c, expression(a))
-        return grain(ph, generer(ph, kd))
+        return grain(ph, gens.pop((i, float(a))) if (i, float(a)) in gens else generer(ph, kd))
 
-    def un_angle(a):
-        t0 = time.time()
+    def partage(a):
         i = int(np.clip(np.searchsorted(lacets, a) - 1, 0, len(photos) - 1))
         w = 0.0
         if len(photos) > 1 and lacets[0] < a < lacets[-1]:
             w = float((a - lacets[i]) / (lacets[i + 1] - lacets[i]))
         elif a >= lacets[-1]:
             i = len(photos) - 1
+        return i, w
+
+    # le modèle d'abord, seul et à la suite (il n'aime pas partager la machine) ; le reste ensuite, de front
+    gens = {}
+    for a in angles:
+        i, w = partage(a)
+        for j in ([i] if w < 0.02 else [i + 1] if w > 0.98 else [i, i + 1]):
+            ph = photos[j]
+            gens[(j, float(a))] = generer(ph, poser(ph['k'], deg(TANG), deg(a), deg(ROUL), ech_c, t_c, expression(a)))
+    etape('modèle')
+
+    def un_angle(a):
+        t0 = time.time()
+        i, w = partage(a)
         if w < 0.02:
             A = vue(i, a)
         elif w > 0.98:
