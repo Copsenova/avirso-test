@@ -34,6 +34,20 @@ IPS = int(os.environ.get('IPS', 40))        # images par seconde de l'animation
 HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
 COTE = int(os.environ.get('COTE', 0))      # côté des images écrites (0 : TAILLE)
 LEGER = os.environ.get('LEGER', '0') == '1'      # serveur : ni vidéo ni planche de contrôle
+FILS = int(os.environ.get('FILS', 1))      # calculs menés de front (les résultats sont les mêmes qu'avec un seul)
+import threading
+from concurrent.futures import ThreadPoolExecutor
+if FILS > 1:
+    cv2.setNumThreads(1)
+_bassin = ThreadPoolExecutor(FILS) if FILS > 1 else None
+_v_gpu, _v_decoupe, _local = threading.Lock(), threading.Lock(), threading.local()
+
+
+def partout(f, suite):
+    """f appliquée à chaque élément, dans l'ordre ; de front si FILS > 1."""
+    return list(_bassin.map(f, suite)) if _bassin else [f(x) for x in suite]
+
+
 T_DEBUT = time.time()
 _t = [T_DEBUT]
 
@@ -116,8 +130,9 @@ try:
     def classes(bgr):
         """Probabilités par pixel, en 256 px : fond, cheveux, peau du corps, peau du visage, vêtements, autres."""
         x = cv2.cvtColor(cv2.resize(bgr, (256, 256), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
-        _it.set_tensor(_e['index'], x[None]); _it.invoke()
-        o = _it.get_tensor(_s['index'])[0]
+        with _v_decoupe:
+            _it.set_tensor(_e['index'], x[None]); _it.invoke()
+            o = _it.get_tensor(_s['index'])[0].copy()
         if o.min() < 0 or o.max() > 1:
             o = np.exp(o - o.max(-1, keepdims=True)); o /= o.sum(-1, keepdims=True)
         return o
@@ -219,11 +234,12 @@ def expression(a):
 
 def generer(ph, kd):
     n = kd.shape[1]
-    d = S['stitching'](torch.cat([ph['ks'].reshape(1, -1), kd.reshape(1, -1)], 1))
-    kd = kd + d[..., :3 * n].reshape(1, n, 3)
-    kd[..., :2] += d[..., 3 * n:3 * n + 2].reshape(1, 1, 2)
-    im = G(feature=W(ph['fs'], kp_source=ph['ks'], kp_driving=kd)['out'])
-    a = (im[0].permute(1, 2, 0).clamp(0, 1).float().cpu().numpy() * 255).astype(np.uint8)
+    with _v_gpu, torch.no_grad():
+        d = S['stitching'](torch.cat([ph['ks'].reshape(1, -1), kd.reshape(1, -1)], 1))
+        kd = kd + d[..., :3 * n].reshape(1, n, 3)
+        kd[..., :2] += d[..., 3 * n:3 * n + 2].reshape(1, 1, 2)
+        im = G(feature=W(ph['fs'], kp_source=ph['ks'], kp_driving=kd)['out'])
+        a = (im[0].permute(1, 2, 0).clamp(0, 1).float().cpu().numpy() * 255).astype(np.uint8)
     a = cv2.cvtColor(a, cv2.COLOR_RGB2BGR)
     return a if a.shape[0] == TAILLE else cv2.resize(a, (TAILLE, TAILLE), interpolation=cv2.INTER_CUBIC)
 
@@ -231,8 +247,12 @@ def generer(ph, kd):
 # ---------- 2. grain de la vraie photo ----------
 gris = lambda a: cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
 try:
-    _dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
-    _flot = lambda a, b: _dis.calc(a, b, None)
+    cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+
+    def _flot(a, b):      # un calculateur par fil
+        if not hasattr(_local, 'dis'):
+            _local.dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+        return _local.dis.calc(a, b, None)
 except AttributeError:
     _flot = lambda a, b: cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 5, 31, 5, 7, 1.5, 0)
 
@@ -290,10 +310,11 @@ with torch.no_grad():
 
     def vue(i, a):
         ph = photos[i]
-        kd = poser(ph['k'], deg(TANG), deg(a), deg(ROUL), ech_c, t_c, expression(a))
+        with torch.no_grad():
+            kd = poser(ph['k'], deg(TANG), deg(a), deg(ROUL), ech_c, t_c, expression(a))
         return grain(ph, generer(ph, kd))
 
-    for a in angles:
+    def un_angle(a):
         t0 = time.time()
         i = int(np.clip(np.searchsorted(lacets, a) - 1, 0, len(photos) - 1))
         w = 0.0
@@ -309,10 +330,13 @@ with torch.no_grad():
             A, B = vue(i, a), vue(i + 1, a)
             fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
             A = cv2.addWeighted(tordre(A, fba, w), 1 - w, tordre(B, fab, 1 - w), w, 0)
+        return A, (classes(A) if classes is not None else None), time.time() - t0
+
+    for A, o, d in partout(un_angle, angles):
         brutes.append(A)
-        if classes is not None:
-            sorties.append(classes(A))
-        durees.append(time.time() - t0)
+        if o is not None:
+            sorties.append(o)
+        durees.append(d)
 
 
 def lisser(v, sigma):
@@ -331,11 +355,11 @@ if sorties:
     M3 = np.array([mesurer_tete(o) for o in sorties])
     # Hauteur : on suit le visage lui-même. Une tête qui tourne sans hocher ne déplace pas son visage vers le haut
     # ni vers le bas ; le déplacement vertical médian du visage entre deux images voisines mesure donc le hochement.
-    dy = [0.0]
-    for n in range(len(brutes) - 1):
+    def glissement(n):
         f = flot(gris(brutes[n]), gris(brutes[n + 1]))
         visage = cv2.resize(sorties[n][..., 3], (TAILLE, TAILLE), interpolation=cv2.INTER_LINEAR) > 0.6
-        dy.append(float(np.median(f[..., 1][visage])) if visage.sum() > 500 else 0.0)
+        return float(np.median(f[..., 1][visage])) if visage.sum() > 500 else 0.0
+    dy = [0.0] + partout(glissement, range(len(brutes) - 1))
     etape('stabilisation')
     Y = np.cumsum(dy)
     n_ref = int(np.argmin(np.abs(angles - ref_lacet)))
@@ -358,18 +382,21 @@ if sorties:
             images.append(A)
     if FOND:
         # image intermédiaire entre deux angles voisins (les deux glissent à mi-chemin l'une vers l'autre) : mouvement deux fois plus fin
+        def milieu(n):
+            (A, aa, ha, xa), (B, ab, hb, xb) = images[n], images[n + 1]
+            fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
+            C = cv2.addWeighted(tordre(A, fba, 0.5), 0.5, tordre(B, fab, 0.5), 0.5, 0)
+            ac = 0.5 * (tordre(aa, fba, 0.5) + tordre(ab, fab, 0.5))
+            hc = 0.5 * (tordre(ha, fba, 0.5) + tordre(hb, fab, 0.5))
+            return C, ac, hc, 0.5 * (xa + xb)
+        milieux = partout(milieu, range(len(images) - 1))
         fines = []
         for n in range(len(images)):
             fines.append(images[n])
             if n + 1 < len(images):
-                (A, aa, ha, xa), (B, ab, hb, xb) = images[n], images[n + 1]
-                fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
-                C = cv2.addWeighted(tordre(A, fba, 0.5), 0.5, tordre(B, fab, 0.5), 0.5, 0)
-                ac = 0.5 * (tordre(aa, fba, 0.5) + tordre(ab, fab, 0.5))
-                hc = 0.5 * (tordre(ha, fba, 0.5) + tordre(hb, fab, 0.5))
-                fines.append((C, ac, hc, 0.5 * (xa + xb)))
+                fines.append(milieux[n])
         etape('intermédiaires')
-        images = [scene.composer(A, al, hb, x, col) for A, al, hb, x in fines]
+        images = partout(lambda e: scene.composer(e[0], e[1], e[2], e[3], col), fines)
         etape('mise en scène')
 else:
     images = brutes
@@ -379,10 +406,12 @@ os.makedirs(os.path.dirname(sortie) or '.', exist_ok=True)
 # Avec la mise en scène, chaque image est la personne seule avec sa transparence (WebP) : c'est l'application qui pose le fond.
 # La vidéo et la planche de contrôle la montrent sur un fond de studio.
 if images and images[0].shape[2] == 4:
-    for n, im in enumerate(images):
+    def ecrire(e):
+        n, im = e
         if COTE and COTE != TAILLE:
             im = cv2.resize(im, (COTE, COTE), interpolation=cv2.INTER_AREA)
         cv2.imwrite(f'{sortie}_{n:03d}.webp', im, [cv2.IMWRITE_WEBP_QUALITY, 82 if LEGER else 92])
+    partout(ecrire, list(enumerate(images)))
     etape('écriture')
     print('temps total : %.1f s' % (time.time() - T_DEBUT))
     if LEGER:

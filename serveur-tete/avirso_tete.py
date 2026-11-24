@@ -44,11 +44,13 @@ image = (
 app = modal.App("avirso-tete", image=image)
 
 
-@app.function(gpu="T4", cpu=8.0, memory=8192, timeout=900, max_containers=1, scaledown_window=60)
+@app.function(gpu="T4", cpu=8.0, memory=8192, timeout=900, max_containers=1, scaledown_window=150)
 def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
     """Fabrique la suite d'images. `photos` : contenu des fichiers. Renvoie les images (WebP) et leurs angles."""
     import base64, glob, os, re, shutil, subprocess, tempfile, time
     import cv2
+    if not photos:      # simple réveil : la machine démarre pendant que la personne prend ses photos
+        return {"ok": True, "reveil": True}
     t0 = time.time()
     dossier = tempfile.mkdtemp(prefix="avirso_")
     try:
@@ -60,7 +62,7 @@ def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
             chemins.append(ch)
         r = subprocess.run(
             ["python", "tete.py", os.path.join(dossier, "t"), *chemins],
-            cwd="/LivePortrait", capture_output=True, text=True, env={**os.environ, "TAILLE": "1024", "COTE": str(cote), "LEGER": "1"},
+            cwd="/LivePortrait", capture_output=True, text=True, env={**os.environ, "TAILLE": "1024", "COTE": str(cote), "LEGER": "1", "FILS": "8"},
         )
         journal = [l for l in r.stdout.splitlines() if l.strip()]
         if r.returncode != 0:
@@ -98,6 +100,11 @@ def site():
     @web.get("/")
     def accueil():
         return {"service": "avirso-tete", "etat": "en marche"}
+
+    @web.post("/reveil")
+    async def reveil():
+        await fabriquer.spawn.aio([])      # aucune donnée envoyée : sert seulement à démarrer la machine de calcul
+        return {"ok": True}
 
     @web.post("/taches")
     async def creer(photos: list[UploadFile] = File(...)):
