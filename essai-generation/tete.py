@@ -28,13 +28,7 @@ MARGE = float(os.environ.get('MARGE', 8))
 TAILLE = int(os.environ.get('TAILLE', 1024))
 FOND = os.environ.get('FOND', '1') == '1'
 RECOUVRE = 2.5          # demi-largeur, en degrés, de la transition entre deux vraies photos
-# Cadrage visé, mesuré sur un cadrage fait à la main (tête à 61 % de la hauteur) : taille et centre des
-# points du modèle. None = on garde le cadrage central sans le corriger.
-ECHELLE_VISEE = os.environ.get('ECHELLE_VISEE')
-CENTRE_VISE = os.environ.get('CENTRE_VISE')
-ECHELLE_VISEE = float(ECHELLE_VISEE) if ECHELLE_VISEE else None
-CENTRE_VISE = [float(v) for v in CENTRE_VISE.split(',')] if CENTRE_VISE else None
-
+HAUTEUR_TETE = 0.61    # part de la hauteur du cadre occupée par la tête (du haut des cheveux au menton)
 CADRE = os.environ.get('CADRE')
 CADRE = [float(v) for v in CADRE.split(',')] if CADRE else None
 
@@ -91,6 +85,46 @@ def deg(v):
     return torch.tensor([[float(v)]], device=dev)
 
 
+# ---------- 0. découpe de la personne (sert au cadrage et au détourage) ----------
+classes = None
+try:
+    import tensorflow as tf
+    tf.config.set_visible_devices([], 'GPU')
+    _it = tf.lite.Interpreter(model_path='pw/selfie_multiclass_256x256.tflite')
+    _it.allocate_tensors()
+    _e, _s = _it.get_input_details()[0], _it.get_output_details()[0]
+
+    def classes(bgr):
+        """Probabilités par pixel, en 256 px : fond, cheveux, peau du corps, peau du visage, vêtements, autres."""
+        x = cv2.cvtColor(cv2.resize(bgr, (256, 256), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
+        _it.set_tensor(_e['index'], x[None]); _it.invoke()
+        o = _it.get_tensor(_s['index'])[0]
+        if o.min() < 0 or o.max() > 1:
+            o = np.exp(o - o.max(-1, keepdims=True)); o /= o.sum(-1, keepdims=True)
+        return o
+    print('découpe de la personne : active')
+except Exception as e:
+    classes = None
+    print('découpe de la personne : indisponible (', type(e).__name__, str(e)[:120], ') : cadrage central, fond gardé')
+
+
+def boite_tete(bgr):
+    """Boîte de la tête (cheveux et peau du visage) en fractions du cadre : x0, y0, x1, y1. None si introuvable."""
+    c = classes(bgr).argmax(-1)
+    m = ((c == 1) | (c == 3)).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
+    if n < 2:
+        return None
+    g = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+    x, y, w, h = st[g, :4]
+    return x / 256, y / 256, (x + w) / 256, (y + h) / 256
+
+
+def detourer(bgr):
+    a = np.clip(((1 - classes(bgr)[..., 0]) - 0.35) / 0.4, 0, 1)
+    return np.clip(cv2.resize(a, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_CUBIC), 0, 1)[..., None]
+
+
 # ---------- 1. cadrage et mesure de chaque vraie photo ----------
 photos = []
 with torch.no_grad():
@@ -101,26 +135,23 @@ with torch.no_grad():
         cx, cy = W0 / 2, (0.45 if W0 >= H0 else 0.42) * H0
         if CADRE:      # cadrage imposé, en fractions : centre x, centre y, côté (du petit côté)
             cx, cy, cote = CADRE[0] * W0, CADRE[1] * H0, CADRE[2] * min(W0, H0)
-        for tour in range(3):
-            k = mesurer(tenseur(cadrer(img, cx, cy, cote, 256)))
-            ks = poser(k, k['pitch'], k['yaw'], k['roll'], k['scale'], k['t'])
-            centre = k['t'][0, :2].cpu().numpy()      # place de la tête dans le cadre, de -1 à +1
-            ech = float(k['scale'])
-            if ECHELLE_VISEE is None or tour == 2:
-                break
-            # on déplace et on redimensionne le cadre pour que la tête ait la taille et la place visées
-            px, py = cx + centre[0] * cote / 2, cy + centre[1] * cote / 2
-            cote = cote * ech / ECHELLE_VISEE
-            cx, cy = px - CENTRE_VISE[0] * cote / 2, py - CENTRE_VISE[1] * cote / 2
+        if classes is not None and not CADRE:      # deux passes : on resserre le cadre sur la tête
+            for tour in range(2):
+                bt = boite_tete(cadrer(img, cx, cy, cote, 256))
+                if bt is None:
+                    print(os.path.basename(ch), ': tête non trouvée, cadrage central gardé')
+                    break
+                hx, hy = cx + ((bt[0] + bt[2]) / 2 - 0.5) * cote, cy + ((bt[1] + bt[3]) / 2 - 0.5) * cote
+                cote = (bt[3] - bt[1]) * cote / HAUTEUR_TETE
+                cx, cy = hx, hy - 0.01 * cote
         net = cadrer(img, cx, cy, cote, TAILLE)
         x = tenseur(cadrer(img, cx, cy, cote, 256))
         k = mesurer(x)
         ph = dict(nom=os.path.basename(ch), net=net, fs=F(x), k=k, yaw=float(k['yaw']), pitch=float(k['pitch']), roll=float(k['roll']))
         ph['ks'] = poser(k, k['pitch'], k['yaw'], k['roll'], k['scale'], k['t'])
         photos.append(ph)
-        c2 = k['t'][0, :2].cpu().numpy()
         print(f"{ph['nom']} : lacet {ph['yaw']:+.1f}°, tangage {ph['pitch']:+.1f}°, roulis {ph['roll']:+.1f}° | "
-              f"échelle {float(k['scale']):.3f}, centre {c2[0]:+.3f},{c2[1]:+.3f} | cadre {cote / min(W0, H0):.2f} du petit côté, {cote * 1.0:.0f} px")
+              f"cadre de {cote:.0f} px centré en {cx / W0:.2f},{cy / H0:.2f} (photo de {W0}x{H0})")
 
 photos.sort(key=lambda p: p['yaw'])
 lacets = np.array([p['yaw'] for p in photos])
@@ -172,35 +203,13 @@ def grain(ph, gt):
     return np.clip(gt.astype(np.float32) + m * (r - bas_r), 0, 255).astype(np.uint8)
 
 
-# ---------- 3. détourage ----------
-detourer = None
-if FOND:
-    try:
-        import tensorflow as tf
-        tf.config.set_visible_devices([], 'GPU')
-        _it = tf.lite.Interpreter(model_path='pw/selfie_multiclass_256x256.tflite')
-        _it.allocate_tensors()
-        _e, _s = _it.get_input_details()[0], _it.get_output_details()[0]
-
-        def detourer(bgr):
-            x = cv2.cvtColor(cv2.resize(bgr, (256, 256), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
-            _it.set_tensor(_e['index'], x[None]); _it.invoke()
-            o = _it.get_tensor(_s['index'])[0]
-            if o.min() < 0 or o.max() > 1:
-                o = np.exp(o - o.max(-1, keepdims=True)); o /= o.sum(-1, keepdims=True)
-            a = np.clip(((1 - o[..., 0]) - 0.35) / 0.4, 0, 1)
-            a = cv2.resize(a, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_CUBIC)[..., None]
-            return np.clip(a, 0, 1)
-        print('détourage : actif')
-    except Exception as e:
-        detourer = None
-        print('détourage : indisponible (', type(e).__name__, str(e)[:120], ')')
+# ---------- 3. fond ----------
 _y = np.linspace(0, 1, TAILLE, dtype=np.float32)[:, None, None]
 ARRIERE = (np.array([[[26, 20, 18]]], np.float32) * (1 - _y) + np.array([[[12, 10, 9]]], np.float32) * _y) * np.ones((1, TAILLE, 1), np.float32)
 
 
 def finir(bgr):
-    if detourer is None:
+    if classes is None or not FOND:
         return bgr
     a = detourer(bgr)
     return (a * bgr.astype(np.float32) + (1 - a) * ARRIERE).astype(np.uint8)
