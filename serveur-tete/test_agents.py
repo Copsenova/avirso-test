@@ -1,5 +1,6 @@
 import pytest
 from agents import nettoyer, PICTOGRAMMES
+import agents
 
 CAT = [{"id": 1}, {"id": 2}]
 def sujet(i, **k):
@@ -38,3 +39,45 @@ def test_produit_vide_devient_none():
 def test_texte_de_compatibilite():
     r = nettoyer(conseil(), CAT)
     assert r["texte"].startswith("Vous cherchez") and len(r["texte"]) <= 400
+
+
+CAT_COMPLET = [{"id": i, "sujet": "peau", "titre": "t", "texte": "x", "niveau": "A"} for i in (1, 2)]
+
+
+class _Rep:
+    def __init__(self, texte, arret="end_turn"):
+        self.stop_reason = arret
+        self.content = [type("B", (), {"type": "text", "text": texte})()]
+
+
+class _Client:
+    """Faux client : enregistre les budgets demandés ; coupe toujours l'étape nommée dans `coupe`."""
+    def __init__(self, coupe=None):
+        self.budgets, self.coupe = [], coupe
+        self.messages = self
+
+    def create(self, model, max_tokens, system, messages, **k):
+        etape = "analyste" if system == agents.CONSIGNE_ANALYSTE else "conseiller"
+        self.budgets.append((etape, max_tokens))
+        if etape == self.coupe:
+            return _Rep("{", "max_tokens")
+        if etape == "analyste":
+            return _Rep('{"fiabilite": "bonne", "limites": []}')
+        import json
+        return _Rep(json.dumps(conseil()))
+
+
+def test_budgets_avec_marge():
+    c = _Client()
+    agents.analyser(c, [], CAT_COMPLET)
+    b = dict(c.budgets)
+    assert b["analyste"] >= 4000 and b["conseiller"] >= 8000
+
+
+def test_erreur_nomme_l_etape_coupee():
+    c = _Client(coupe="conseiller")
+    try:
+        agents.analyser(c, [], CAT_COMPLET)
+        assert False, "aurait dû échouer"
+    except ValueError as e:
+        assert "conseiller" in str(e)

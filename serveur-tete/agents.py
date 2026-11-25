@@ -128,7 +128,7 @@ SCHEMA_CONSEILLER = _obj({
     "selection": {"type": "array", "items": _obj({"id": {"type": "integer"}, "pourquoi": S})}})
 
 
-def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict | None = None) -> dict:
+def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict | None = None, etape: str = "modèle") -> dict:
     """Appel du modèle. Avec un schéma, l'API contraint la réponse à un JSON valide conforme (sorties structurées),
     ce qui évite les JSON mal formés (guillemets non échappés dans un texte en français). Une seconde tentative si besoin."""
     derniere = None
@@ -143,7 +143,7 @@ def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict 
             return _json("".join(b.text for b in r.content if getattr(b, "type", "") == "text"))
         except Exception as e:
             derniere = f"{e} ; blocs reçus {types}, arrêt {getattr(r, 'stop_reason', '?')}, schéma {'oui' if schema else 'non'}"
-    raise ValueError(f"réponse illisible du modèle ({derniere})")
+    raise ValueError(f"réponse illisible du modèle, étape {etape} ({derniere})")
 
 
 def nettoyer(conseil: dict, catalogue: list) -> dict:
@@ -178,9 +178,9 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
 def analyser(client, photos: list, catalogue: list, reponses: dict | None = None) -> dict:
     """photos : contenu des fichiers (face, puis les côtés). Renvoie la description, l'analyse à afficher, les points et les fiches choisies."""
     vues = [_image(p) for p in photos[:3]]
-    description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 2000, SCHEMA_ANALYSTE)
+    description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 4000, SCHEMA_ANALYSTE, "analyste")
     cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"], "nature": f.get("nature", ""), "releve": f.get("releve", "")} for f in catalogue]
     demande = json.dumps({"description": description, "reponses": reponses or {}, "catalogue": cat}, ensure_ascii=False)
-    conseil = nettoyer(_appeler(client, CONSIGNE_CONSEILLER, [{"type": "text", "text": demande}], 4000, SCHEMA_CONSEILLER), catalogue)
+    conseil = nettoyer(_appeler(client, CONSIGNE_CONSEILLER, [{"type": "text", "text": demande}], 8000, SCHEMA_CONSEILLER, "conseiller"), catalogue)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}
