@@ -53,6 +53,7 @@ image = (
     .add_local_file("serveur-tete/agents.py", "/root/agents.py")
     .add_local_file("serveur-tete/savoir.json", "/root/savoir.json")
     .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
+    .add_local_file("serveur-tete/catalogue.json", "/root/catalogue.json")
 )
 
 app = modal.App("avirso-tete", image=image)
@@ -60,6 +61,7 @@ app = modal.App("avirso-tete", image=image)
 # ---------------------------------------------------------------- essai de coupe par édition d'image (Qwen-Image-Edit-2511, Apache 2.0)
 # Les poids (plusieurs dizaines de Go) sont gardés dans un volume Modal, téléchargés une seule fois. Rien d'autre n'est gardé.
 MODELE_COUPE = "Qwen/Qwen-Image-Edit-2511"
+LORA_RAPIDE, FICHIER_RAPIDE = "lightx2v/Qwen-Image-Edit-2511-Lightning", "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 poids = modal.Volume.from_name("avirso-poids", create_if_missing=True)
 image_coupe = (
     modal.Image.debian_slim(python_version="3.11")
@@ -68,6 +70,7 @@ image_coupe = (
                  "huggingface_hub[hf_transfer]", "pillow", "pillow-heif", "git+https://github.com/huggingface/diffusers")
     .env({"HF_HOME": "/poids", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
     .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
+    .add_local_file("serveur-tete/catalogue.json", "/root/catalogue.json")
 )
 
 
@@ -76,6 +79,7 @@ def precharger_coupe() -> str:
     """Télécharge les poids du modèle de coupe dans le volume (une seule fois)."""
     from huggingface_hub import snapshot_download
     chemin = snapshot_download(MODELE_COUPE)
+    snapshot_download(LORA_RAPIDE, allow_patterns=[FICHIER_RAPIDE])
     poids.commit()
     return chemin
 
@@ -88,15 +92,21 @@ class Retoucheur:
         from diffusers import QwenImageEditPlusPipeline
         self.pipe = QwenImageEditPlusPipeline.from_pretrained(MODELE_COUPE, torch_dtype=torch.bfloat16).to("cuda")
         self.pipe.set_progress_bar_config(disable=True)
+        # version accélérée (Lightning, Apache 2.0) : 4 à 8 pas au lieu de 40, sans guidage
+        self.rapide = os.environ.get("COUPE_RAPIDE", "1") == "1"
+        if self.rapide:
+            self.pipe.load_lora_weights(LORA_RAPIDE, weight_name=FICHIER_RAPIDE)
 
     def _editer(self, images, texte: str):
         import torch
-        sortie = self.pipe(image=images, prompt=texte, negative_prompt=" ", true_cfg_scale=4.0, guidance_scale=1.0,
-                           num_inference_steps=int(os.environ.get("PAS_COUPE", "40")), generator=torch.manual_seed(0))
+        pas = int(os.environ.get("PAS_COUPE", "8" if self.rapide else "40"))
+        sortie = self.pipe(image=images, prompt=texte, negative_prompt=" ", true_cfg_scale=1.0 if self.rapide else 4.0, guidance_scale=1.0,
+                           num_inference_steps=pas, generator=torch.manual_seed(0))
         return sortie.images[0]
 
     @modal.method()
-    def retoucher(self, photos: list[bytes], coupe: str, couleur: str | None = None) -> dict:
+    def retoucher(self, photos: list[bytes], coupe: str | None, couleur: str | None = None, barbe: str | None = None,
+                  texture_barbe: str | None = None, couleur_barbe: str | None = None) -> dict:
         """photos : [face, trois-quarts...]. Renvoie la face retouchée puis les autres vues (WebP base64)."""
         import base64, io, sys, time
         from PIL import Image, ImageOps
@@ -118,9 +128,10 @@ class Retoucheur:
             def webp(im):
                 f = io.BytesIO(); im.save(f, "WEBP", quality=92); return base64.b64encode(f.getvalue()).decode()
             ims = [ouvrir(b) for b in photos[:3]]
-            face = self._editer([ims[0]], consigne(coupe, couleur, "face"))
+            face = self._editer([ims[0]], consigne(coupe, couleur, "face", barbe, texture_barbe, couleur_barbe))
             t_face = time.time() - t0
-            vues = [self._editer([im, face], consigne(coupe, couleur, "trois_quarts")) for im in ims[1:]]
+            # chaque trois-quarts est retouché seul (avec la face en référence, le modèle remettait la tête de face)
+            vues = [self._editer([im], consigne(coupe, couleur, "trois_quarts", barbe, texture_barbe, couleur_barbe)) for im in ims[1:]]
             return {"ok": True, "face": webp(face), "vues": [webp(v) for v in vues], "secondes": round(time.time() - t0, 1), "secondes_face": round(t_face, 1)}
         except ValueError as e:
             return {"ok": False, "erreur": str(e)}
@@ -203,7 +214,7 @@ def site():
     @web.post("/reveil")
     async def reveil():
         await fabriquer.spawn.aio([])      # aucune donnée envoyée : sert seulement à démarrer la machine de calcul
-        await Retoucheur().retoucher.spawn.aio([], "degrade", None)      # idem pour le modèle de coupe (chargement long)
+        await Retoucheur().retoucher.spawn.aio([], None)      # idem pour le modèle de coupe (chargement long)
         return {"ok": True}
 
     @web.post("/taches")
@@ -247,14 +258,20 @@ def site():
         return {"id": appel.object_id}
 
     @web.post("/coupes")
-    async def creer_coupe(photos: list[UploadFile] = File(...), coupe: str = Form(...), couleur: str = Form("")):
+    async def creer_coupe(photos: list[UploadFile] = File(...), coupe: str = Form(""), couleur: str = Form(""), barbe: str = Form(""),
+                          texture_barbe: str = Form(""), couleur_barbe: str = Form("")):
         import sys
         sys.path.insert(0, "/root")
-        from coupes import valider_demande
+        from coupes import valider_demande, BARBES, TEXTURES_BARBE, COULEURS_BARBE
         try:
             coupe, teinte = valider_demande(coupe, couleur)
         except ValueError:
             raise HTTPException(400, "coupe inconnue")
+        barbe = barbe if barbe in BARBES else None
+        texture_barbe = texture_barbe if texture_barbe in TEXTURES_BARBE else None
+        couleur_barbe = couleur_barbe if couleur_barbe in COULEURS_BARBE else None
+        if not (coupe or teinte or barbe or texture_barbe or couleur_barbe):
+            raise HTTPException(400, "rien à changer")
         if not 1 <= len(photos) <= 3:
             raise HTTPException(400, "envoyez de 1 à 3 photos (la face d'abord)")
         contenus = []
@@ -263,7 +280,7 @@ def site():
             if len(c) > MAX_OCTETS:
                 raise HTTPException(413, "photo trop lourde (12 Mo au plus)")
             contenus.append(c)
-        appel = await Retoucheur().retoucher.spawn.aio(contenus, coupe, teinte)
+        appel = await Retoucheur().retoucher.spawn.aio(contenus, coupe, teinte, barbe, texture_barbe, couleur_barbe)
         return {"id": appel.object_id}
 
     @web.get("/coupes/{ident}")
@@ -305,7 +322,7 @@ essais = modal.Volume.from_name("avirso-essais", create_if_missing=True)
 
 
 @app.function(image=image_coupe, volumes={"/essais": essais}, timeout=7200)
-def essai_coupes_distant(contenus: list[bytes], coupes: list[str], couleurs: list[str | None], dossier: str) -> None:
+def essai_coupes_distant(contenus: list[bytes], demandes: list[dict], dossier: str) -> None:
     """Essai mené entièrement sur Modal (le poste peut se déconnecter). Résultats dans le volume avirso-essais, à effacer après lecture."""
     import base64, json, os, time
     os.makedirs(f"/essais/{dossier}", exist_ok=True); journal = []
@@ -313,21 +330,21 @@ def essai_coupes_distant(contenus: list[bytes], coupes: list[str], couleurs: lis
         journal.append(l); open(f"/essais/{dossier}/journal.txt", "w").write("\n".join(journal)); essais.commit()
     noter(f"poids : {precharger_coupe.remote()}")
     r = Retoucheur()
-    for coupe in coupes:
-        for couleur in couleurs:
-            t0 = time.time(); res = r.retoucher.remote(contenus, coupe, couleur); nom = f"{coupe}_{couleur or 'naturelle'}"
-            if not res.get("ok"):
-                noter(f"{nom} ÉCHEC {json.dumps(res)[:400]}"); continue
-            for k, b in enumerate([res["face"], *res["vues"]]):
-                open(f"/essais/{dossier}/{nom}_{k}.webp", "wb").write(base64.b64decode(b))
-            noter(f"{nom} face {res['secondes_face']} s ; total {res['secondes']} s ; aller-retour {round(time.time() - t0, 1)} s")
+    for d in demandes:
+        t0 = time.time(); res = r.retoucher.remote(contenus, **d); nom = "_".join(str(v) for v in d.values() if v) or "rien"
+        if not res.get("ok"):
+            noter(f"{nom} ÉCHEC {json.dumps(res)[:400]}"); continue
+        for k, b in enumerate([res["face"], *res["vues"]]):
+            open(f"/essais/{dossier}/{nom}_{k}.webp", "wb").write(base64.b64decode(b))
+        noter(f"{nom} face {res['secondes_face']} s ; total {res['secondes']} s ; aller-retour {round(time.time() - t0, 1)} s")
     noter("FIN")
 
 
 @app.local_entrypoint()
-def essai_coupes(photos: str, coupes: str = "degrade", couleurs: str = "", dossier: str = "essai"):
-    """modal run --detach serveur-tete/avirso_tete.py::essai_coupes --photos "face.jpg,g.jpg,d.jpg" --coupes afro --couleurs noir
+def essai_coupes(photos: str, demandes: str = '[{"coupe": "degrade"}]', dossier: str = "essai"):
+    """modal run --detach serveur-tete/avirso_tete.py::essai_coupes --photos "face.jpg,g.jpg,d.jpg" --demandes '[{"coupe": "afro", "couleur": "noir"}]'
     puis : modal volume get avirso-essais <dossier> ; modal volume rm -r avirso-essais <dossier>"""
     contenus = [open(p, "rb").read() for p in photos.split(",")]
-    appel = essai_coupes_distant.spawn(contenus, coupes.split(","), couleurs.split(",") if couleurs else [None], dossier)
+    import json
+    appel = essai_coupes_distant.spawn(contenus, json.loads(demandes), dossier)
     print("essai lancé :", appel.object_id)
