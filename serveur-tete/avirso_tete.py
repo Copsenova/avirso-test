@@ -55,6 +55,76 @@ image = (
 
 app = modal.App("avirso-tete", image=image)
 
+# ---------------------------------------------------------------- essai de coupe par édition d'image (Qwen-Image-Edit-2511, Apache 2.0)
+# Les poids (plusieurs dizaines de Go) sont gardés dans un volume Modal, téléchargés une seule fois. Rien d'autre n'est gardé.
+MODELE_COUPE = "Qwen/Qwen-Image-Edit-2511"
+poids = modal.Volume.from_name("avirso-poids", create_if_missing=True)
+image_coupe = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git")
+    .pip_install("torch==2.6.0", "torchvision==0.21.0", "transformers>=4.51", "accelerate", "safetensors", "sentencepiece",
+                 "huggingface_hub[hf_transfer]", "pillow", "pillow-heif", "git+https://github.com/huggingface/diffusers")
+    .env({"HF_HOME": "/poids", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
+)
+
+
+@app.function(image=image_coupe, volumes={"/poids": poids}, timeout=3600, cpu=4.0)
+def precharger_coupe() -> str:
+    """Télécharge les poids du modèle de coupe dans le volume (une seule fois)."""
+    from huggingface_hub import snapshot_download
+    chemin = snapshot_download(MODELE_COUPE)
+    poids.commit()
+    return chemin
+
+
+@app.cls(image=image_coupe, gpu="H100", volumes={"/poids": poids}, timeout=900, scaledown_window=300, max_containers=1)
+class Retoucheur:
+    @modal.enter()
+    def charger(self):
+        import torch
+        from diffusers import QwenImageEditPlusPipeline
+        self.pipe = QwenImageEditPlusPipeline.from_pretrained(MODELE_COUPE, torch_dtype=torch.bfloat16).to("cuda")
+        self.pipe.set_progress_bar_config(disable=True)
+
+    def _editer(self, images, texte: str):
+        import torch
+        sortie = self.pipe(image=images, prompt=texte, negative_prompt=" ", true_cfg_scale=4.0, guidance_scale=1.0,
+                           num_inference_steps=int(os.environ.get("PAS_COUPE", "40")), generator=torch.manual_seed(0))
+        return sortie.images[0]
+
+    @modal.method()
+    def retoucher(self, photos: list[bytes], coupe: str, couleur: str | None = None) -> dict:
+        """photos : [face, trois-quarts...]. Renvoie la face retouchée puis les autres vues (WebP base64)."""
+        import base64, io, sys, time
+        from PIL import Image, ImageOps
+        sys.path.insert(0, "/root")
+        from coupes import consigne
+        if not photos:
+            return {"ok": True, "reveil": True}
+        t0 = time.time()
+        try:
+            def ouvrir(b):
+                try:
+                    from pillow_heif import register_heif_opener
+                    register_heif_opener()
+                except Exception:
+                    pass
+                im = ImageOps.exif_transpose(Image.open(io.BytesIO(b))).convert("RGB")
+                im.thumbnail((1024, 1024))
+                return im
+            def webp(im):
+                f = io.BytesIO(); im.save(f, "WEBP", quality=92); return base64.b64encode(f.getvalue()).decode()
+            ims = [ouvrir(b) for b in photos[:3]]
+            face = self._editer([ims[0]], consigne(coupe, couleur, "face"))
+            t_face = time.time() - t0
+            vues = [self._editer([im, face], consigne(coupe, couleur, "trois_quarts")) for im in ims[1:]]
+            return {"ok": True, "face": webp(face), "vues": [webp(v) for v in vues], "secondes": round(time.time() - t0, 1), "secondes_face": round(t_face, 1)}
+        except ValueError as e:
+            return {"ok": False, "erreur": str(e)}
+        except Exception as e:
+            return {"ok": False, "erreur": "la retouche a échoué", "detail": f"{type(e).__name__}: {str(e)[:300]}"}
+
 
 @app.function(gpu="T4", cpu=8.0, memory=8192, timeout=900, max_containers=1, scaledown_window=150)
 def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
@@ -202,3 +272,22 @@ def essai(photos: str, sortie: str = "essai_tete"):
         for n, im in enumerate(r["images"]):
             open(os.path.join(sortie, f"{n:03d}.webp"), "wb").write(base64.b64decode(im))
         print(len(r["images"]), "images écrites dans", sortie)
+
+
+@app.local_entrypoint()
+def essai_coupes(photos: str, coupes: str = "degrade", couleurs: str = "", sortie: str = "essai_coupes"):
+    """Essai sans site : modal run serveur-tete/avirso_tete.py::essai_coupes --photos "face.jpg,g.jpg,d.jpg" --coupes afro,tresses --couleurs noir"""
+    import base64, os, time
+    os.makedirs(sortie, exist_ok=True)
+    contenus = [open(p, "rb").read() for p in photos.split(",")]
+    print("préchargement des poids :", precharger_coupe.remote())
+    r = Retoucheur()
+    for coupe in coupes.split(","):
+        for couleur in (couleurs.split(",") if couleurs else [None]):
+            t0 = time.time(); res = r.retoucher.remote(contenus, coupe, couleur)
+            nom = f"{coupe}_{couleur or 'naturelle'}"
+            if not res.get("ok"):
+                print(nom, "ÉCHEC", res); continue
+            for i, b in enumerate([res["face"], *res["vues"]]):
+                open(os.path.join(sortie, f"{nom}_{i}.webp"), "wb").write(base64.b64decode(b))
+            print(nom, "face", res["secondes_face"], "s ; total", res["secondes"], "s ; aller-retour", round(time.time() - t0, 1), "s")
