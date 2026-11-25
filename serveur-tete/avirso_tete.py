@@ -46,7 +46,7 @@ image = (
         *[f"wget -q -P /LivePortrait/pw {POIDS}/{f}" for f in FICHIERS],
         f"wget -q -P /LivePortrait/pw {DECOUPE}",
     )
-    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET, "VERSION_SITE": "2026-11-25-reveil-coupes"})
+    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET, "VERSION_SITE": "2026-11-25-sujets"})
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
     .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
     .add_local_file("essai-generation/couleur.py", "/LivePortrait/couleur.py")

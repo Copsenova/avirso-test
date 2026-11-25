@@ -11,6 +11,9 @@ import base64, io, json, re
 
 MODELE = "claude-sonnet-5-5"
 ZONES = ["forehead", "temples", "brows", "eyes", "nose", "cheeks", "mouth", "chin", "jaw"]
+# pictogrammes de l'app (liste fermée) et types de produits du catalogue de l'app (aucune marque)
+PICTOGRAMMES = ["cheveux", "peau", "barbe", "yeux", "sourcils", "levres", "nez", "visage", "coupe", "couleur", "routine_jour", "routine_semaine", "produits", "soleil", "sommeil", "alimentation"]
+PRODUITS = ["nettoyant", "ceramides", "spf50", "baume-spf", "baume-nuit", "huile", "pierre", "bb-creme", "correcteur", "blush-creme", "enlumineur", "gel-sourcils", "crayon-sourcils", "fard-noisette", "liner-feutre", "mascara", "rouge-levres", "demaquillant", "shampoing", "apres-shampoing", "creme-coiffante", "elastiques", "taie-satin"]
 NOMS_ZONES = {"forehead": "front (et cheveux)", "temples": "tempes", "brows": "sourcils", "eyes": "yeux", "nose": "nez",
               "cheeks": "joues (peau)", "mouth": "bouche", "chin": "menton (barbe)", "jaw": "mâchoire (rasage)"}
 
@@ -60,20 +63,25 @@ Ta tâche :
    Mets en premier les fiches qui répondent à ce que la personne vient chercher.
    N'utilise que des numéros présents dans le catalogue. Pour chacune, écris en une phrase (25 mots au plus) pourquoi elle la concerne,
    en t'appuyant sur la description, sans affirmer ce que la description ne dit pas.
-2. Rédiger l'analyse affichée à l'arrivée : 110 à 170 mots, en français, au vouvoiement, chaleureuse et précise, comme un visagiste qui parle.
-   Commence par une phrase qui montre que tu as compris ce que la personne vient chercher (ou, sans réponse, ce qui frappe d'abord).
-   Décris ensuite le visage, les cheveux, la barbe et la peau, en valorisant sans flatter ni juger, en reliant ce que tu vois à son objectif ;
-   puis dis en une phrase ce qui peut le mettre en valeur ; termine en lui indiquant la zone du visage à toucher en premier pour son objectif,
-   comme un accompagnateur qui montre le chemin. Si la fiabilité est faible, dis-le simplement.
-3. Donner 3 à 5 points à retenir, le premier lié à son objectif s'il y en a un (titre de 2 à 5 mots, texte de 25 mots au plus), chacun rattaché à une zone parmi :
-   forehead (front et cheveux), temples, brows, eyes, nose, cheeks (peau), mouth, chin (barbe), jaw (rasage).
+2. Ranger la réponse pour qu'elle se lise sans effort, comme un visagiste qui accompagne :
+   - "accroche" : une phrase (30 mots au plus) qui répond d'abord à ce que la personne vient chercher (ou, sans réponse, à ce qui frappe d'abord).
+   - "sujets" : 3 à 5 sujets, du plus important au moins important : d'abord ce qui répond à son objectif, puis ce qui en découle.
+     Chaque sujet : "pictogramme" (un mot de la liste fournie), "titre" (2 à 4 mots), "constat" (ce qu'on voit, 25 mots au plus),
+     "consequence" (ce que ça change pour elle, 25 mots au plus), "action" (ce qu'elle peut faire, 25 mots au plus, concret),
+     "zone" (une zone parmi : forehead (front et cheveux), temples, brows, eyes, nose, cheeks (peau), mouth, chin (barbe), jaw (rasage)),
+     "fiches" (numéros des fiches qui fondent le conseil) et "produit" (un type de produit de la liste fournie si l'action en demande un, sinon "").
+     Une phrase par champ, au vouvoiement, valorisante sans flatter ni juger ; explique tout mot du métier en quelques mots.
+   - "suite" : une phrase qui propose la prochaine étape (la zone à toucher en premier, ou l'essai d'une coupe).
+   Si la fiabilité est faible, dis-le simplement dans l'accroche.
+3. Pictogrammes possibles : cheveux, peau, barbe, yeux, sourcils, levres, nez, visage, coupe, couleur, routine_jour, routine_semaine, produits, soleil, sommeil, alimentation.
+   Types de produits possibles : nettoyant, ceramides, spf50, baume-spf, baume-nuit, huile, pierre, bb-creme, correcteur, blush-creme, enlumineur, gel-sourcils, crayon-sourcils, fard-noisette, liner-feutre, mascara, rouge-levres, demaquillant, shampoing, apres-shampoing, creme-coiffante, elastiques, taie-satin.
 
 Règles : aucune note de beauté, aucun défaut, aucun diagnostic médical, aucune marque de produit, rien sur l'origine ou l'âge.
 Les conseils viennent des fiches choisies : n'en invente pas d'autres.
 Ne présente jamais un savoir-faire, une hypothèse ou une tendance comme un fait prouvé : dis « d'après les coiffeurs », « c'est une hypothèse »,
 « c'est tendance en <mois année> ». Une tendance n'est jamais une recommandation de santé.
 Réponds uniquement par un objet JSON valide, sans texte autour :
-{"texte": "...", "points": [{"titre": "...", "texte": "...", "zone": "..."}], "selection": [{"id": 0, "pourquoi": "..."}]}"""
+{"accroche": "...", "sujets": [{"pictogramme": "...", "titre": "...", "constat": "...", "consequence": "...", "action": "...", "zone": "...", "fiches": [0], "produit": ""}], "suite": "...", "selection": [{"id": 0, "pourquoi": "..."}]}"""
 
 
 def _image(contenu: bytes) -> dict:
@@ -112,8 +120,11 @@ SCHEMA_ANALYSTE = _obj({
     "visage": _obj({"forme": S, "traits_marquants": {"type": "array", "items": S}}),
     "lunettes": S, "fiabilite": S, "limites": {"type": "array", "items": S}})
 SCHEMA_CONSEILLER = _obj({
-    "texte": S,
-    "points": {"type": "array", "items": _obj({"titre": S, "texte": S, "zone": {"type": "string", "enum": ZONES}})},
+    "accroche": S,
+    "sujets": {"type": "array", "items": _obj({"pictogramme": {"type": "string", "enum": PICTOGRAMMES}, "titre": S, "constat": S, "consequence": S, "action": S,
+                                               "zone": {"type": "string", "enum": ZONES}, "fiches": {"type": "array", "items": {"type": "integer"}},
+                                               "produit": {"type": "string", "enum": PRODUITS + [""]}})},
+    "suite": S,
     "selection": {"type": "array", "items": _obj({"id": {"type": "integer"}, "pourquoi": S})}})
 
 
@@ -146,12 +157,22 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
             continue
         if i in ids and i not in vus:
             vus.add(i); selection.append({"id": i, "pourquoi": str(s.get("pourquoi", ""))[:220]})
-    points = [{"titre": str(p.get("titre", ""))[:60], "texte": str(p.get("texte", ""))[:240], "zone": p.get("zone") if p.get("zone") in ZONES else "cheeks"}
-              for p in (conseil.get("points") or [])[:5] if p.get("titre")]
-    texte = str(conseil.get("texte", "")).strip()[:1600]
-    if not texte:
+    mots = lambda s, n: " ".join(str(s or "").split()[:n])
+    sujets = []
+    for s in (conseil.get("sujets") or [])[:5]:
+        if not isinstance(s, dict) or not str(s.get("titre", "")).strip():
+            continue
+        sujets.append({"pictogramme": s.get("pictogramme") if s.get("pictogramme") in PICTOGRAMMES else "visage", "titre": mots(s.get("titre"), 4),
+                       "constat": mots(s.get("constat"), 25), "consequence": mots(s.get("consequence"), 25), "action": mots(s.get("action"), 25),
+                       "zone": s.get("zone") if s.get("zone") in ZONES else "cheeks",
+                       "fiches": [int(i) for i in (s.get("fiches") or []) if isinstance(i, int) and i in ids][:6],
+                       "produit": s.get("produit") if s.get("produit") in PRODUITS else None})
+    accroche = mots(conseil.get("accroche"), 30).strip()
+    if not accroche or not sujets:
         raise ValueError("analyse vide")
-    return {"texte": texte, "points": points, "selection": selection[:24]}
+    points = [{"titre": s["titre"], "texte": s["constat"], "zone": s["zone"]} for s in sujets]      # pour les anciennes versions de l'app
+    suite = mots(conseil.get("suite"), 30)
+    return {"accroche": accroche, "sujets": sujets, "suite": suite, "texte": f"{accroche} {suite}".strip(), "points": points, "selection": selection[:24]}      # texte : anciennes versions de l'app
 
 
 def analyser(client, photos: list, catalogue: list, reponses: dict | None = None) -> dict:
