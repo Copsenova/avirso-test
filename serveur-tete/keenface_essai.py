@@ -5,13 +5,20 @@ import os
 import modal
 
 app = modal.App("avirso-keenface-essai")
+essais = modal.Volume.from_name("avirso-essais", create_if_missing=True)
 image = modal.Image.debian_slim(python_version="3.11").pip_install("requests==2.32.3").add_local_file("serveur-tete/keenface.py", "/root/keenface.py")
 
 
-@app.function(image=image, secrets=[modal.Secret.from_name("keentools")], timeout=900)
+@app.function(image=image, secrets=[modal.Secret.from_name("keentools")], volumes={"/essais": essais}, timeout=900)
 def reconstruire_distant(photos: list[bytes]) -> dict:
-    import requests, keenface
-    r = keenface.reconstruire(photos, requests.Session())
+    import json, requests, keenface
+    try:
+        r = keenface.reconstruire(photos, requests.Session())
+    except Exception as e:      # le resultat (ou l'erreur) reste lisible dans le volume, meme si le lanceur local s'est arrete
+        open("/essais/keenface_resultat.json", "w").write(json.dumps({"ok": False, "erreur": str(e)})); essais.commit(); raise
+    open("/essais/keenface_tete.zip", "wb").write(r["zip"])
+    open("/essais/keenface_resultat.json", "w").write(json.dumps({"ok": True, "id": r["id"], "secondes": r["secondes"], "octets": len(r["zip"])}))
+    essais.commit()
     return {"id": r["id"], "zip": r["zip"], "secondes": r["secondes"]}
 
 
