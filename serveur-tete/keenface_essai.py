@@ -13,7 +13,9 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install("requests==2.
 def reconstruire_distant(photos: list[bytes]) -> dict:
     import json, requests, keenface
     try:
-        r = keenface.reconstruire(photos, requests.Session())
+        def noter(m):
+            print(m); open("/essais/keenface_journal.txt", "a").write(m + "\n"); essais.commit()
+        r = keenface.reconstruire(photos, requests.Session(), noter=noter)
     except Exception as e:      # le resultat (ou l'erreur) reste lisible dans le volume, meme si le lanceur local s'est arrete
         open("/essais/keenface_resultat.json", "w").write(json.dumps({"ok": False, "erreur": str(e)})); essais.commit(); raise
     open("/essais/keenface_tete.zip", "wb").write(r["zip"])
@@ -22,8 +24,19 @@ def reconstruire_distant(photos: list[bytes]) -> dict:
     return {"id": r["id"], "zip": r["zip"], "secondes": r["secondes"]}
 
 
+@app.function(image=image, secrets=[modal.Secret.from_name("keentools")], volumes={"/essais": essais}, timeout=600)
+def recuperer_distant(ident: str) -> bytes:
+    """Télécharge la tête d'une séance déjà calculée (sans relancer la reconstruction). FACTURÉ selon KeenTools."""
+    import requests, keenface
+    z = keenface.telecharger(ident, requests.Session())
+    open("/essais/keenface_tete.zip", "wb").write(z); essais.commit()
+    return z
+
+
 @app.local_entrypoint()
-def main(dossier: str, sortie: str):
+def main(dossier: str = "", sortie: str = "", ident: str = ""):
+    if ident:
+        z = recuperer_distant.remote(ident); open(os.path.expanduser(sortie), "wb").write(z); print("tête récupérée :", sortie, len(z) // 1024, "Ko"); return
     dossier, sortie = os.path.expanduser(dossier), os.path.expanduser(sortie)
     noms = sorted(f for f in os.listdir(dossier) if f.lower().endswith((".jpg", ".jpeg")))[:7]
     print("photos :", noms)

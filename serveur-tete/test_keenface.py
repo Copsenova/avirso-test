@@ -63,3 +63,34 @@ def test_cle_absente(monkeypatch):
     monkeypatch.delenv("KEENTOOLS_API_KEY")
     with pytest.raises(kf.ErreurKeen, match="secrets Modal"):
         kf.reconstruire(PHOTOS, FauxServeur(), dormir=lambda _: None)
+
+
+class ServeurLien(FauxServeur):
+    """Le téléchargement répond par un JSON contenant un lien vers le ZIP (cas rencontré le 25/11)."""
+    def get(self, url, headers=None, params=None, timeout=None, allow_redirects=True):
+        if url.startswith("https://stockage/"):
+            self.appels.append(("GET", url, headers)); return Rep(contenu=b"PK\x03\x04vrai")
+        if url.endswith("/get-3d-model"):
+            self.appels.append(("GET", url, params)); self.telechargements += 1
+            return Rep(j={"download_url": "https://stockage/tete.zip"}, contenu=b'{"download_url": "https://stockage/tete.zip"}')
+        return super().get(url, headers, params, timeout, allow_redirects)
+
+
+def test_lien_de_telechargement_suivi_sans_retelecharger():
+    s = ServeurLien(); r = kf.reconstruire(PHOTOS, s, dormir=lambda _: None)
+    assert r["zip"] == b"PK\x03\x04vrai" and s.telechargements == 1
+    lien = [a for a in s.appels if a[1].startswith("https://stockage/")][0]
+    assert not (lien[2] or {}).get("Authorization")          # la clé ne part pas vers le stockage
+
+
+def test_reponse_inattendue_gardee_et_id_note():
+    class Bizarre(FauxServeur):
+        def get(self, url, headers=None, params=None, timeout=None, allow_redirects=True):
+            if url.endswith("/get-3d-model"):
+                self.telechargements += 1; return Rep(contenu=b"<html>?</html>", j={})
+            return super().get(url, headers, params, timeout, allow_redirects)
+    notes = []
+    with pytest.raises(kf.ErreurKeen) as e:
+        kf.reconstruire(PHOTOS, Bizarre(), dormir=lambda _: None, noter=notes.append)
+    assert "av1" in str(e.value) and "<html>" in str(e.value)
+    assert any("av1" in n for n in notes)

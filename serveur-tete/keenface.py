@@ -54,7 +54,7 @@ def _trouver_adresses(j, n: int) -> list[str]:
     return trouve[:n]
 
 
-def reconstruire(photos: list[bytes], session, attente_max: float = 420, pas: float = 6, dormir=time.sleep) -> dict:
+def reconstruire(photos: list[bytes], session, attente_max: float = 420, pas: float = 6, dormir=time.sleep, noter=print) -> dict:
     """photos : 3 à 7 JPEG (face d'abord). session : objet type requests.Session. Renvoie {id, zip (octets), secondes}."""
     if not 3 <= len(photos) <= 7:
         raise ErreurKeen("il faut de 3 à 7 photos")
@@ -63,6 +63,7 @@ def reconstruire(photos: list[bytes], session, attente_max: float = 420, pas: fl
     if r.status_code >= 400:
         raise ErreurKeen(f"init refusé ({r.status_code}) : {r.text[:300]}")
     j = r.json(); ident = _trouver_id(j)
+    noter(f"séance KeenFace ouverte : {ident}")      # garder l'identifiant : il permet de récupérer la tête sans tout refaire
     for adr, p in zip(_trouver_adresses(j, len(photos)), photos):
         rr = session.put(adr, headers={"Content-Type": "image/jpeg"}, data=p, timeout=120)
         if rr.status_code >= 400:
@@ -82,7 +83,27 @@ def reconstruire(photos: list[bytes], session, attente_max: float = 420, pas: fl
         if time.time() - debut > attente_max:
             raise ErreurKeen("reconstruction trop longue (plus de 7 minutes)")
         dormir(pas)
-    z = session.get(f"{API}/v1/avatar/{ident}/get-3d-model", headers=h, params=FORMAT, timeout=180, allow_redirects=True)      # FACTURÉ : un seul appel
-    if z.status_code >= 400 or not z.content.startswith(b"PK"):
-        raise ErreurKeen(f"téléchargement du modèle refusé ({z.status_code})")
-    return {"id": ident, "zip": z.content, "secondes": round(time.time() - t0, 1)}
+    return {"id": ident, "zip": telecharger(ident, session), "secondes": round(time.time() - t0, 1)}
+
+
+def telecharger(ident: str, session) -> bytes:
+    """Le modèle (ZIP OBJ + texture). FACTURÉ à chaque appel : un seul appel à get-3d-model.
+    La réponse peut être le ZIP lui-même, ou un JSON avec un lien de téléchargement, suivi SANS la clé."""
+    h = {"Authorization": f"Bearer {_cle()}"}
+    z = session.get(f"{API}/v1/avatar/{ident}/get-3d-model", headers=h, params=FORMAT, timeout=180, allow_redirects=True)
+    if z.status_code < 400 and z.content.startswith(b"PK"):
+        return z.content
+    lien = None
+    try:
+        j = z.json()
+        lien = next((v for k, v in (j.items() if isinstance(j, dict) else []) if isinstance(v, str) and v.startswith("http")), None)
+        if not lien and isinstance(j, dict):
+            lien = next((v for d in j.values() if isinstance(d, dict) for v in d.values() if isinstance(v, str) and v.startswith("http")), None)
+    except Exception:
+        pass
+    if lien:
+        f = session.get(lien, headers={}, params=None, timeout=180, allow_redirects=True)
+        if f.status_code < 400 and f.content.startswith(b"PK"):
+            return f.content
+    debut = (z.content or b"")[:600].decode("utf-8", "replace")
+    raise ErreurKeen(f"séance {ident} : réponse de téléchargement inattendue ({z.status_code}) : {debut}")
