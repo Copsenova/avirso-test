@@ -12,7 +12,8 @@ def consulter(chemins: list[str]) -> list[str]:
     for c in chemins:
         assert "get-3d-model" not in c
         try:
-            r = requests.get("https://api.keenface.ai" + c, headers=h, timeout=30)
+            m, _, u = c.partition(":") if c.startswith("POST:") else ("GET", "", c)
+            r = requests.post("https://api.keenface.ai" + u, headers={**h, "Content-Type": "application/json"}, json={}, timeout=30) if m == "POST" else requests.get("https://api.keenface.ai" + u, headers=h, timeout=30)
             out.append(f"{c} -> {r.status_code} {r.headers.get('content-type','')} {r.text[:700]}")
         except Exception as e:
             out.append(f"{c} -> erreur {e}")
