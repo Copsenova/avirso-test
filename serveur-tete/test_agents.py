@@ -81,3 +81,16 @@ def test_erreur_nomme_l_etape_coupee():
         assert False, "aurait dû échouer"
     except ValueError as e:
         assert "conseiller" in str(e)
+
+
+def test_coupe_propre_titre_un_peu_long_garde():
+    r = nettoyer(conseil(sujets=[sujet(0, titre="Protéger vos taches de soleil")] * 3), CAT)
+    assert r["sujets"][0]["titre"] == "Protéger vos taches de soleil"
+
+
+def test_coupe_propre_jamais_au_milieu():
+    long = "Nettoyez avec un produit doux au plus deux fois par jour, puis hydratez avec un soin « non comédogène » (qui ne bouche pas les pores), matin et soir, sans frotter ni insister sur les zones sèches du visage."
+    r = nettoyer(conseil(sujets=[sujet(0, action=long)] * 3), CAT)
+    a = r["sujets"][0]["action"]
+    assert a.endswith((".", "…")) and a.count("(") == a.count(")")
+    assert not a.rstrip("…").split()[-1] in {"de", "les", "le", "la", "des", "du", "et", "à", "pas", "un", "une"}

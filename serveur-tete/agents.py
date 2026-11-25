@@ -146,6 +146,31 @@ def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict 
     raise ValueError(f"réponse illisible du modèle, étape {etape} ({derniere})")
 
 
+VIDES = {"de", "d'", "les", "le", "la", "l'", "des", "du", "et", "ou", "à", "au", "aux", "en", "pour", "par", "pas", "un", "une",
+         "vos", "votre", "sur", "avec", "sans", "qui", "que", "ne", "ni", "se", "sa", "son", "ses"}
+
+
+def borner(texte, n: int) -> str:
+    """Plafonne à n mots sans couper au milieu : fin de phrase si elle est assez loin, sinon mot plein suivi de « … »
+    (jamais sur un petit mot, une parenthèse ou un guillemet laissé ouvert)."""
+    m = str(texte or "").split()
+    if len(m) <= n:
+        return " ".join(m)
+    t = " ".join(m[:n])
+    if t.endswith((".", "!", "?")):
+        return t
+    i = max(t.rfind(". "), t.rfind("! "), t.rfind("? "))
+    if i >= len(t) // 2:
+        return t[:i + 1]
+    for ouvre, ferme in (("(", ")"), ("«", "»"), ("[", "]")):
+        if t.count(ouvre) > t.count(ferme):
+            t = t[:t.rfind(ouvre)]
+    m = t.rstrip(" ,;:").split()
+    while len(m) > 1 and m[-1].lower().strip(",;:") in VIDES:
+        m.pop()
+    return " ".join(m).rstrip(" ,;:—-") + "…"
+
+
 def nettoyer(conseil: dict, catalogue: list) -> dict:
     """Ne garde que des fiches du catalogue, des zones connues et des textes de longueur raisonnable."""
     ids = {f["id"] for f in catalogue}
@@ -157,12 +182,12 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
             continue
         if i in ids and i not in vus:
             vus.add(i); selection.append({"id": i, "pourquoi": str(s.get("pourquoi", ""))[:220]})
-    mots = lambda s, n: " ".join(str(s or "").split()[:n])
+    mots = borner
     sujets = []
     for s in (conseil.get("sujets") or [])[:5]:
         if not isinstance(s, dict) or not str(s.get("titre", "")).strip():
             continue
-        sujets.append({"pictogramme": s.get("pictogramme") if s.get("pictogramme") in PICTOGRAMMES else "visage", "titre": mots(s.get("titre"), 4),
+        sujets.append({"pictogramme": s.get("pictogramme") if s.get("pictogramme") in PICTOGRAMMES else "visage", "titre": mots(s.get("titre"), 7),
                        "constat": mots(s.get("constat"), 25), "consequence": mots(s.get("consequence"), 25), "action": mots(s.get("action"), 25),
                        "zone": s.get("zone") if s.get("zone") in ZONES else "cheeks",
                        "fiches": [int(i) for i in (s.get("fiches") or []) if isinstance(i, int) and i in ids][:6],
