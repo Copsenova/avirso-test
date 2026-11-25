@@ -46,11 +46,12 @@ image = (
         *[f"wget -q -P /LivePortrait/pw {POIDS}/{f}" for f in FICHIERS],
         f"wget -q -P /LivePortrait/pw {DECOUPE}",
     )
-    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET, "VERSION_SITE": "2026-11-25-borner"})
+    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET, "VERSION_SITE": "2026-11-25-visagiste"})
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
     .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
     .add_local_file("essai-generation/couleur.py", "/LivePortrait/couleur.py")
     .add_local_file("serveur-tete/agents.py", "/root/agents.py")
+    .add_local_file("serveur-tete/visagiste.py", "/root/visagiste.py")
     .add_local_file("serveur-tete/savoir.json", "/root/savoir.json")
     .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
     .add_local_file("serveur-tete/catalogue.json", "/root/catalogue.json")
@@ -190,7 +191,8 @@ def analyser_photos(photos: list[bytes], reponses: dict | None = None) -> dict:
     t0 = time.time()
     try:
         import anthropic, agents
-        r = agents.analyser(anthropic.Anthropic(), photos, json.load(open("/root/savoir.json", encoding="utf-8")), reponses)
+        r = agents.analyser(anthropic.Anthropic(), photos, json.load(open("/root/savoir.json", encoding="utf-8")), reponses,
+                            styles=json.load(open("/root/catalogue.json", encoding="utf-8")))
         r["secondes"] = round(time.time() - t0, 1)
         return r
     except Exception as e:

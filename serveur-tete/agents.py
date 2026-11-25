@@ -8,6 +8,7 @@
 #
 # Le modèle est appelé avec la clé ANTHROPIC_API_KEY, rangée dans un secret Modal : elle n'est jamais écrite dans le code.
 import base64, io, json, re
+import visagiste
 
 MODELE = "claude-sonnet-5-5"
 ZONES = ["forehead", "temples", "brows", "eyes", "nose", "cheeks", "mouth", "chin", "jaw"]
@@ -171,6 +172,18 @@ def borner(texte, n: int) -> str:
     return " ".join(m).rstrip(" ,;:—-") + "…"
 
 
+CONSIGNE_VISAGISTE = """
+3. Le bloc "visagiste" : en expert (coiffeur, barbier, opticien, conseiller en image), choisis pour cette personne, uniquement dans les listes fournies (champ "listes") :
+   - "coupe" : la coupe qui lui irait le mieux, compatible avec la texture de ses cheveux (champ "textures" de chaque coupe), et 2 autres possibles ;
+   - "couleur" : une couleur de cheveux accordée à son sous-ton (fiches « Couleur de cheveux selon le sous-ton »), proche du naturel si rien ne s'impose, et 2 autres ;
+   - "barbe" : le style de barbe selon la forme du visage (fiches « Barbe selon la forme du visage ») ; "aucune" si un visage rasé lui va mieux ou si la pilosité ne se voit pas ;
+   - "lunettes" : la forme de monture selon la forme du visage (fiches « Forme de monture »), et 2 autres ;
+   - "vetements" : 3 à 5 couleurs de vêtements selon son contraste (clarté des cheveux, de la peau et des yeux) et son sous-ton, et 0 à 2 à éviter ; c'est une pratique de métier, pas une science ;
+   - "outils" : 2 à 5 outils adaptés à la texture de ses cheveux et à sa barbe (fiches « Outils selon le type de cheveux », « Outils de la barbe »).
+   Chaque "pourquoi" : une phrase (30 mots au plus) qui part de ce qu'on voit sur cette personne. "fiches" : les numéros qui fondent le choix.
+"""
+
+
 def nettoyer(conseil: dict, catalogue: list) -> dict:
     """Ne garde que des fiches du catalogue, des zones connues et des textes de longueur raisonnable."""
     ids = {f["id"] for f in catalogue}
@@ -200,12 +213,22 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
     return {"accroche": accroche, "sujets": sujets, "suite": suite, "texte": f"{accroche} {suite}".strip(), "points": points, "selection": selection[:24]}      # texte : anciennes versions de l'app
 
 
-def analyser(client, photos: list, catalogue: list, reponses: dict | None = None) -> dict:
+def analyser(client, photos: list, catalogue: list, reponses: dict | None = None, styles: dict | None = None) -> dict:
     """photos : contenu des fichiers (face, puis les côtés). Renvoie la description, l'analyse à afficher, les points et les fiches choisies."""
     vues = [_image(p) for p in photos[:3]]
     description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 4000, SCHEMA_ANALYSTE, "analyste")
     cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"], "nature": f.get("nature", ""), "releve": f.get("releve", "")} for f in catalogue]
-    demande = json.dumps({"description": description, "reponses": reponses or {}, "catalogue": cat}, ensure_ascii=False)
-    conseil = nettoyer(_appeler(client, CONSIGNE_CONSEILLER, [{"type": "text", "text": demande}], 8000, SCHEMA_CONSEILLER, "conseiller"), catalogue)
+    entree = {"description": description, "reponses": reponses or {}, "catalogue": cat}
+    schema, consigne, budget = SCHEMA_CONSEILLER, CONSIGNE_CONSEILLER, 8000
+    if styles:      # recommandations du visagiste, choisies dans des listes fermées
+        entree["listes"] = visagiste.listes_pour_le_modele(styles)
+        schema = {**SCHEMA_CONSEILLER, "properties": {**SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles)},
+                  "required": [*SCHEMA_CONSEILLER["required"], "visagiste"]}
+        consigne, budget = CONSIGNE_CONSEILLER + CONSIGNE_VISAGISTE, 12000
+    brut = _appeler(client, consigne, [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}], budget, schema, "conseiller")
+    conseil = nettoyer(brut, catalogue)
+    if styles:
+        ch = description.get("cheveux")
+        conseil["visagiste"] = visagiste.nettoyer_visagiste(brut.get("visagiste"), styles, {f["id"] for f in catalogue}, ch.get("texture", "") if isinstance(ch, dict) else "")
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}

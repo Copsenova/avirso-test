@@ -94,3 +94,33 @@ def test_coupe_propre_jamais_au_milieu():
     a = r["sujets"][0]["action"]
     assert a.endswith((".", "…")) and a.count("(") == a.count(")")
     assert not a.rstrip("…").split()[-1] in {"de", "les", "le", "la", "des", "du", "et", "à", "pas", "un", "une"}
+
+
+STYLES = {"coupes": [{"id": "afro_court", "nom": "Afro court", "textures": ["crepu"]}], "couleurs": [{"id": "noir", "nom": "Noir naturel"}], "barbes": [{"id": "barbe_courte", "nom": "Barbe courte"}]}
+
+
+class _ClientVisagiste(_Client):
+    def create(self, model, max_tokens, system, messages, **k):
+        self.schemas = getattr(self, "schemas", []) + [k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")]
+        if system == agents.CONSIGNE_ANALYSTE:
+            return _Rep('{"fiabilite": "bonne", "limites": [], "cheveux": {"texture": "crépus"}}')
+        import json
+        self.demande = messages[0]["content"][0]["text"]
+        c = conseil(visagiste={"coupe": {"choix": "afro_court", "pourquoi": "Vos boucles serrées.", "autres": [], "fiches": [1]},
+                               "outils": [{"id": "eponge-twists", "pourquoi": "Pour définir."}]})
+        return _Rep(json.dumps(c))
+
+
+def test_visagiste_dans_la_reponse():
+    c = _ClientVisagiste()
+    r = agents.analyser(c, [], CAT_COMPLET, styles=STYLES)
+    assert r["visagiste"]["coupe"]["nom"] == "Afro court"
+    assert r["visagiste"]["outils"][0]["id"] == "eponge-twists"
+    assert "visagiste" in c.schemas[-1]["properties"]
+    assert "afro_court" in c.demande          # le conseiller reçoit les listes où choisir
+
+
+def test_sans_styles_pas_de_bloc_visagiste():
+    c = _Client()
+    r = agents.analyser(c, [], CAT_COMPLET)
+    assert r.get("visagiste") is None
