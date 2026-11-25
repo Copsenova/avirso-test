@@ -308,6 +308,7 @@ def grain(ph, gt):
 
 # ---------- 3. mise en scène (fond, lumière, étalonnage) : voir mise_en_scene.py ----------
 from mise_en_scene import Scene
+from couleur import stats_lab, recaler
 scene = Scene(TAILLE)
 
 
@@ -326,6 +327,11 @@ with torch.no_grad():
         ph['g0'] = generer(ph, ph['ks'].clone())
         ph['net_cale'] = tordre(ph['net'], flot(gris(ph['g0']), gris(ph['net'])))
     print('préparation %.1f s' % (time.time() - t0))
+    # référence de couleur : la peau du visage sur chaque vraie photo (calée sur sa propre pose)
+    REF_COULEUR = []
+    for ph in photos:
+        oc = classes(ph['net_cale']) if classes is not None else None
+        REF_COULEUR.append(stats_lab(ph['net_cale'], cv2.resize(oc[..., 3], (ph['net_cale'].shape[1], ph['net_cale'].shape[0])) > 0.5) if oc is not None else None)
 
     def vue(i, a):
         ph = photos[i]
@@ -362,7 +368,14 @@ with torch.no_grad():
             A, B = vue(i, a), vue(i + 1, a)
             fab, fba = flot(gris(A), gris(B)), flot(gris(B), gris(A))
             A = cv2.addWeighted(tordre(A, fba, w), 1 - w, tordre(B, fab, 1 - w), w, 0)
-        return A, (classes(A) if classes is not None else None), time.time() - t0
+        o = classes(A) if classes is not None else None
+        if o is not None and REF_COULEUR:      # teinte de peau ramenée sur celle des vraies photos (mélange selon l'angle)
+            ra, rb = REF_COULEUR[i], REF_COULEUR[min(i + 1, len(photos) - 1)]
+            if ra is not None and rb is not None:
+                cible = ((1 - w) * ra[0] + w * rb[0], (1 - w) * ra[1] + w * rb[1])
+                peau_a = cv2.resize(o[..., 3], (A.shape[1], A.shape[0]), interpolation=cv2.INTER_LINEAR) > 0.5
+                A = recaler(A, peau_a, cible)
+        return A, o, time.time() - t0
 
     for A, o, d in partout(un_angle, angles):
         brutes.append(A)
@@ -443,7 +456,7 @@ if images and images[0].shape[2] == 4:
         n, im = e
         if COTE and COTE != TAILLE:
             im = cv2.resize(im, (COTE, COTE), interpolation=cv2.INTER_AREA)
-        cv2.imwrite(f'{sortie}_{n:03d}.webp', im, [cv2.IMWRITE_WEBP_QUALITY, 82 if LEGER else 92])
+        cv2.imwrite(f'{sortie}_{n:03d}.webp', im, [cv2.IMWRITE_WEBP_QUALITY, 92])
     partout(ecrire, list(enumerate(images)))
     etape('écriture')
     print('temps total : %.1f s' % (time.time() - T_DEBUT))

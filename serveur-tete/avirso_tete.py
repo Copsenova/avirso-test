@@ -49,8 +49,10 @@ image = (
     .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET})
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
     .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
+    .add_local_file("essai-generation/couleur.py", "/LivePortrait/couleur.py")
     .add_local_file("serveur-tete/agents.py", "/root/agents.py")
     .add_local_file("serveur-tete/savoir.json", "/root/savoir.json")
+    .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
 )
 
 app = modal.App("avirso-tete", image=image)
@@ -127,7 +129,7 @@ class Retoucheur:
 
 
 @app.function(gpu="T4", cpu=8.0, memory=8192, timeout=900, max_containers=1, scaledown_window=150)
-def fabriquer(photos: list[bytes], cote: int = 720) -> dict:
+def fabriquer(photos: list[bytes], cote: int = 960) -> dict:
     """Fabrique la suite d'images. `photos` : contenu des fichiers. Renvoie les images (WebP) et leurs angles."""
     import base64, glob, os, re, shutil, subprocess, tempfile, time
     import cv2
@@ -201,6 +203,7 @@ def site():
     @web.post("/reveil")
     async def reveil():
         await fabriquer.spawn.aio([])      # aucune donnée envoyée : sert seulement à démarrer la machine de calcul
+        await Retoucheur().retoucher.spawn.aio([], "degrade", None)      # idem pour le modèle de coupe (chargement long)
         return {"ok": True}
 
     @web.post("/taches")
@@ -242,6 +245,30 @@ def site():
                "message": rep.get("message", "")[:300] if isinstance(rep.get("message"), str) else ""}
         appel = await analyser_photos.spawn.aio(contenus, rep)
         return {"id": appel.object_id}
+
+    @web.post("/coupes")
+    async def creer_coupe(photos: list[UploadFile] = File(...), coupe: str = Form(...), couleur: str = Form("")):
+        import sys
+        sys.path.insert(0, "/root")
+        from coupes import valider_demande
+        try:
+            coupe, teinte = valider_demande(coupe, couleur)
+        except ValueError:
+            raise HTTPException(400, "coupe inconnue")
+        if not 1 <= len(photos) <= 3:
+            raise HTTPException(400, "envoyez de 1 à 3 photos (la face d'abord)")
+        contenus = []
+        for p in photos:
+            c = await p.read()
+            if len(c) > MAX_OCTETS:
+                raise HTTPException(413, "photo trop lourde (12 Mo au plus)")
+            contenus.append(c)
+        appel = await Retoucheur().retoucher.spawn.aio(contenus, coupe, teinte)
+        return {"id": appel.object_id}
+
+    @web.get("/coupes/{ident}")
+    async def lire_coupe(ident: str):
+        return await lire(ident)
 
     @web.get("/analyses/{ident}")
     async def lire_analyse(ident: str):
