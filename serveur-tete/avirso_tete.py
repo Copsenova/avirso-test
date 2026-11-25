@@ -84,7 +84,7 @@ def precharger_coupe() -> str:
     return chemin
 
 
-@app.cls(image=image_coupe, gpu="H100", volumes={"/poids": poids}, timeout=900, scaledown_window=300, max_containers=1)
+@app.cls(image=image_coupe, gpu="H100", volumes={"/poids": poids}, timeout=900, scaledown_window=120, max_containers=1)
 class Retoucheur:
     @modal.enter()
     def charger(self):
@@ -214,7 +214,11 @@ def site():
     @web.post("/reveil")
     async def reveil():
         await fabriquer.spawn.aio([])      # aucune donnée envoyée : sert seulement à démarrer la machine de calcul
-        await Retoucheur().retoucher.spawn.aio([], None)      # idem pour le modèle de coupe (chargement long)
+        return {"ok": True}
+
+    @web.post("/reveil-coupes")
+    async def reveil_coupes():
+        await Retoucheur().retoucher.spawn.aio([], None)      # le modèle de coupe (GPU coûteux) ne démarre que si la personne ouvre l'essai de style
         return {"ok": True}
 
     @web.post("/taches")
