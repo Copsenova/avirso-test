@@ -105,7 +105,7 @@ class Retoucheur:
         return sortie.images[0]
 
     @modal.method()
-    def retoucher(self, photos: list[bytes], coupe: str | None, couleur: str | None = None, barbe: str | None = None,
+    def retoucher(self, photos: list[bytes], coupe: str | None = None, couleur: str | None = None, barbe: str | None = None,
                   texture_barbe: str | None = None, couleur_barbe: str | None = None) -> dict:
         """photos : [face, trois-quarts...]. Renvoie la face retouchée puis les autres vues (WebP base64)."""
         import base64, io, sys, time
