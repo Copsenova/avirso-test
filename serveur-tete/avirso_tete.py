@@ -66,7 +66,7 @@ poids = modal.Volume.from_name("avirso-poids", create_if_missing=True)
 image_coupe = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
-    .pip_install("torch==2.6.0", "torchvision==0.21.0", "transformers>=4.51", "accelerate", "safetensors", "sentencepiece",
+    .pip_install("torch==2.6.0", "torchvision==0.21.0", "transformers>=4.51", "accelerate", "peft>=0.17", "safetensors", "sentencepiece",
                  "huggingface_hub[hf_transfer]", "pillow", "pillow-heif", "git+https://github.com/huggingface/diffusers")
     .env({"HF_HOME": "/poids", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
     .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
