@@ -39,3 +39,10 @@ def consigne(coupe: str, couleur: str | None, vue: str) -> str:
         return f"Change only the hairstyle of the person to {COUPES[coupe]}{teinte}. {GARDE}."
     return (f"Change only the hairstyle of the person in image 1 to the same hairstyle as image 2 "
             f"({COUPES[coupe]}{teinte}), seen from this angle. {GARDE}.")
+
+
+def valider_demande(coupe: str, couleur: str | None) -> tuple[str, str | None]:
+    """Contrôle une demande venue de l'app : coupe du catalogue obligatoire, couleur hors nuancier ignorée."""
+    if coupe not in COUPES:
+        raise ValueError(f"coupe inconnue : {coupe}")
+    return coupe, (couleur if couleur in COULEURS else None)

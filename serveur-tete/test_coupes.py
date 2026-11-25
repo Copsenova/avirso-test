@@ -23,3 +23,12 @@ def test_catalogue():
 
 def test_couleur_ajoutee():
     assert COULEURS["chatain"] in consigne("degrade", "chatain", "face")
+
+
+def test_valider_demande():
+    from coupes import valider_demande
+    assert valider_demande("afro", "noir") == ("afro", "noir")
+    assert valider_demande("afro", "violet") == ("afro", None)
+    assert valider_demande("afro", "") == ("afro", None)
+    with pytest.raises(ValueError):
+        valider_demande("perruque", "noir")

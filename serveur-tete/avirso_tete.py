@@ -274,20 +274,33 @@ def essai(photos: str, sortie: str = "essai_tete"):
         print(len(r["images"]), "images écrites dans", sortie)
 
 
-@app.local_entrypoint()
-def essai_coupes(photos: str, coupes: str = "degrade", couleurs: str = "", sortie: str = "essai_coupes"):
-    """Essai sans site : modal run serveur-tete/avirso_tete.py::essai_coupes --photos "face.jpg,g.jpg,d.jpg" --coupes afro,tresses --couleurs noir"""
-    import base64, os, time
-    os.makedirs(sortie, exist_ok=True)
-    contenus = [open(p, "rb").read() for p in photos.split(",")]
-    print("préchargement des poids :", precharger_coupe.remote())
+essais = modal.Volume.from_name("avirso-essais", create_if_missing=True)
+
+
+@app.function(image=image_coupe, volumes={"/essais": essais}, timeout=7200)
+def essai_coupes_distant(contenus: list[bytes], coupes: list[str], couleurs: list[str | None], dossier: str) -> None:
+    """Essai mené entièrement sur Modal (le poste peut se déconnecter). Résultats dans le volume avirso-essais, à effacer après lecture."""
+    import base64, json, os, time
+    os.makedirs(f"/essais/{dossier}", exist_ok=True); journal = []
+    def noter(l):
+        journal.append(l); open(f"/essais/{dossier}/journal.txt", "w").write("\n".join(journal)); essais.commit()
+    noter(f"poids : {precharger_coupe.remote()}")
     r = Retoucheur()
-    for coupe in coupes.split(","):
-        for couleur in (couleurs.split(",") if couleurs else [None]):
-            t0 = time.time(); res = r.retoucher.remote(contenus, coupe, couleur)
-            nom = f"{coupe}_{couleur or 'naturelle'}"
+    for coupe in coupes:
+        for couleur in couleurs:
+            t0 = time.time(); res = r.retoucher.remote(contenus, coupe, couleur); nom = f"{coupe}_{couleur or 'naturelle'}"
             if not res.get("ok"):
-                print(nom, "ÉCHEC", res); continue
-            for i, b in enumerate([res["face"], *res["vues"]]):
-                open(os.path.join(sortie, f"{nom}_{i}.webp"), "wb").write(base64.b64decode(b))
-            print(nom, "face", res["secondes_face"], "s ; total", res["secondes"], "s ; aller-retour", round(time.time() - t0, 1), "s")
+                noter(f"{nom} ÉCHEC {json.dumps(res)[:400]}"); continue
+            for k, b in enumerate([res["face"], *res["vues"]]):
+                open(f"/essais/{dossier}/{nom}_{k}.webp", "wb").write(base64.b64decode(b))
+            noter(f"{nom} face {res['secondes_face']} s ; total {res['secondes']} s ; aller-retour {round(time.time() - t0, 1)} s")
+    noter("FIN")
+
+
+@app.local_entrypoint()
+def essai_coupes(photos: str, coupes: str = "degrade", couleurs: str = "", dossier: str = "essai"):
+    """modal run --detach serveur-tete/avirso_tete.py::essai_coupes --photos "face.jpg,g.jpg,d.jpg" --coupes afro --couleurs noir
+    puis : modal volume get avirso-essais <dossier> ; modal volume rm -r avirso-essais <dossier>"""
+    contenus = [open(p, "rb").read() for p in photos.split(",")]
+    appel = essai_coupes_distant.spawn(contenus, coupes.split(","), couleurs.split(",") if couleurs else [None], dossier)
+    print("essai lancé :", appel.object_id)
