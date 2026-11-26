@@ -9,6 +9,7 @@
 # Le modèle est appelé avec la clé ANTHROPIC_API_KEY, rangée dans un secret Modal : elle n'est jamais écrite dans le code.
 import base64, io, json, re
 import visagiste
+import chapitres
 
 MODELE = "claude-sonnet-5-5"
 ZONES = ["forehead", "temples", "brows", "eyes", "nose", "cheeks", "mouth", "chin", "jaw"]
@@ -222,13 +223,14 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
     schema, consigne, budget = SCHEMA_CONSEILLER, CONSIGNE_CONSEILLER, 8000
     if styles:      # recommandations du visagiste, choisies dans des listes fermées
         entree["listes"] = visagiste.listes_pour_le_modele(styles)
-        schema = {**SCHEMA_CONSEILLER, "properties": {**SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles)},
-                  "required": [*SCHEMA_CONSEILLER["required"], "visagiste"]}
-        consigne, budget = CONSIGNE_CONSEILLER + CONSIGNE_VISAGISTE, 12000
+        schema = {**SCHEMA_CONSEILLER, "properties": {**SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles), "guide": chapitres.schema(styles)},
+                  "required": [*SCHEMA_CONSEILLER["required"], "visagiste", "guide"]}
+        consigne, budget = CONSIGNE_CONSEILLER + CONSIGNE_VISAGISTE + chapitres.CONSIGNE, 20000      # le guide (lot 2) allonge la réponse
     brut = _appeler(client, consigne, [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}], budget, schema, "conseiller")
     conseil = nettoyer(brut, catalogue)
     if styles:
         ch = description.get("cheveux")
         conseil["visagiste"] = visagiste.nettoyer_visagiste(brut.get("visagiste"), styles, {f["id"] for f in catalogue}, ch.get("texture", "") if isinstance(ch, dict) else "")
+        conseil["guide"] = chapitres.nettoyer_guide(brut.get("guide"), styles, description, reponses)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}

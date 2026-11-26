@@ -124,3 +124,37 @@ def test_sans_styles_pas_de_bloc_visagiste():
     c = _Client()
     r = agents.analyser(c, [], CAT_COMPLET)
     assert r.get("visagiste") is None
+
+
+class _ClientGuide(_Client):
+    """Analyste : pas de barbe, cheveux raides ; conseiller : visagiste + guide complet (6 chapitres dont barbe)."""
+    def create(self, model, max_tokens, system, messages, **k):
+        self.schemas = getattr(self, "schemas", []) + [k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")]
+        self.budgets.append(max_tokens)
+        if system == agents.CONSIGNE_ANALYSTE:
+            return _Rep('{"fiabilite": "bonne", "limites": [], "cheveux": {"texture": "raides"}, "barbe": {"presence": "aucune"}}')
+        import json, test_chapitres
+        self.systeme = system
+        return _Rep(json.dumps(conseil(visagiste={}, guide=test_chapitres.bloc())))
+
+
+def test_analyser_renvoie_le_guide():
+    import test_chapitres
+    c = _ClientGuide()
+    r = agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    ids = [x["id"] for x in r["guide"]["chapitres"]]
+    assert ids == ["cheveux", "peau", "regard", "lunettes", "couleurs"]      # pas de barbe visible
+    assert "guide" in c.schemas[-1]["required"] and "guide" in c.schemas[-1]["properties"]
+    assert "TUTOIEMENT" in c.systeme and c.budgets[-1] >= 20000
+
+
+def test_guide_invalide_donne_none():
+    import json
+
+    class C(_ClientGuide):
+        def create(self, model, max_tokens, system, messages, **k):
+            if system == agents.CONSIGNE_ANALYSTE:
+                return _Rep('{"fiabilite": "bonne", "limites": []}')
+            return _Rep(json.dumps(conseil(visagiste={}, guide={"ouverture": [], "chapitres": {}})))
+    r = agents.analyser(C(), [], CAT_COMPLET, None, styles=STYLES)
+    assert r["guide"] is None and r["ok"] is True

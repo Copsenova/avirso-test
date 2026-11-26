@@ -52,6 +52,7 @@ image = (
     .add_local_file("essai-generation/couleur.py", "/LivePortrait/couleur.py")
     .add_local_file("serveur-tete/agents.py", "/root/agents.py")
     .add_local_file("serveur-tete/visagiste.py", "/root/visagiste.py")
+    .add_local_file("serveur-tete/chapitres.py", "/root/chapitres.py")
     .add_local_file("serveur-tete/savoir.json", "/root/savoir.json")
     .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")
     .add_local_file("serveur-tete/catalogue.json", "/root/catalogue.json")
