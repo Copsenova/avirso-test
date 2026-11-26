@@ -1,0 +1,135 @@
+import copy, json, os
+import chapitres
+
+CAT = json.load(open(os.path.join(os.path.dirname(__file__), "catalogue.json"), encoding="utf-8"))
+IDS = ["cheveux", "peau", "barbe", "regard", "lunettes", "couleurs"]
+
+
+def chap(premier, sur, audacieux):
+    return {"afficher": True,
+            "vu": [{"texte": "Je vois des cheveux denses et brillants.", "etiquette": "Dense"}, {"texte": "La longueur arrive aux épaules.", "etiquette": ""}],
+            "sens": ["Ta densité permet une coupe structurée."], "objectif": "Garder du volume sans effort.",
+            "premier": premier, "sur": sur, "audacieux": audacieux, "eviter": "Le lissage quotidien à haute température.",
+            "routine": [{"geste": "Lave deux fois par semaine", "detail": "Shampoing doux.", "picto": "cheveux"},
+                        {"geste": "Démêle sur cheveux mouillés", "detail": "Peigne à dents larges.", "picto": "outils"},
+                        {"geste": "Dors sur du satin", "detail": "Taie en satin.", "picto": "sommeil"}],
+            "produits": [{"type": "Shampoing doux", "cle": "shampoing"}]}
+
+
+def libre(n):
+    return {"nom": n, "pourquoi": "Il répond à ce que je vois sur ta peau."}
+
+
+def ferme(i):
+    return {"id": i, "pourquoi": "Il répond à ce que je vois sur toi."}
+
+
+def bloc():
+    return {"ouverture": ["Ton visage est ovale.", "Tes cheveux sont lisses.", "Ta peau est claire, sous-ton froid."],
+            "chapitres": {"cheveux": chap(ferme("carre_long"), ferme("mi_long_degrade"), ferme("carre_frange")),
+                          "peau": chap(libre("SPF chaque matin"), libre("Routine en trois gestes"), libre("Teint léger")),
+                          "barbe": chap(ferme("barbe_courte"), ferme("trois_jours"), ferme("barbe_moyenne")),
+                          "regard": chap(libre("Gel à sourcils"), libre("Mascara brun"), libre("Liner étiré")),
+                          "lunettes": chap(ferme("wayfarer"), ferme("rectangulaire"), ferme("cat-eye")),
+                          "couleurs": chap(ferme("vert-olive"), ferme("marine"), ferme("bordeaux"))}}
+
+
+def desc(barbe="courte", texture="raides"):
+    return {"cheveux": {"texture": texture}, "barbe": {"presence": barbe}}
+
+
+def test_guide_complet():
+    g = chapitres.nettoyer_guide(bloc(), CAT, desc(), None)
+    assert [c["id"] for c in g["chapitres"]] == IDS
+    assert g["profil"] == {"barbe": True}
+    lun = next(c for c in g["chapitres"] if c["id"] == "lunettes")
+    assert lun["conseils"]["premier"]["nom"] == "Wayfarer" and lun["titre"] == "Lunettes" and lun["zones"] == ["eyes", "nose"]
+    ch = g["chapitres"][0]
+    assert ch["conseils"]["premier"]["essai"] == "coupe" and ch["conseils"]["premier"]["id"] == "carre_long"
+    assert ch["picto"] == "cheveux" and ch["conseils"]["eviter"]
+    assert g["ouverture"]["phrases"][0] == "Ton visage est ovale."
+
+
+def test_barbe_retiree_sans_barbe_visible():
+    g = chapitres.nettoyer_guide(bloc(), CAT, desc("aucune"), {"objectifs": []})
+    assert "barbe" not in [c["id"] for c in g["chapitres"]] and g["profil"]["barbe"] is False
+
+
+def test_barbe_gardee_si_objectif_barbe():
+    g = chapitres.nettoyer_guide(bloc(), CAT, desc("indéterminé"), {"objectifs": ["barbe"]})
+    assert "barbe" in [c["id"] for c in g["chapitres"]]
+
+
+def test_identifiant_inconnu_retire_le_chapitre():
+    b = bloc(); b["chapitres"]["lunettes"]["premier"]["id"] = "licorne"
+    ids = [c["id"] for c in chapitres.nettoyer_guide(b, CAT, desc(), None)["chapitres"]]
+    assert "lunettes" not in ids and "couleurs" in ids
+
+
+def test_choix_en_double_retire_le_chapitre():
+    b = bloc(); b["chapitres"]["couleurs"]["sur"]["id"] = "vert-olive"
+    assert "couleurs" not in [c["id"] for c in chapitres.nettoyer_guide(b, CAT, desc(), None)["chapitres"]]
+
+
+def test_coupe_incompatible_avec_la_texture():
+    b = bloc(); b["chapitres"]["cheveux"]["premier"]["id"] = "ivy_league"      # lisse et ondulé seulement
+    assert "cheveux" not in [c["id"] for c in chapitres.nettoyer_guide(b, CAT, desc(texture="crépus"), None)["chapitres"]]
+
+
+def test_afficher_faux():
+    b = bloc(); b["chapitres"]["peau"]["afficher"] = False
+    assert "peau" not in [c["id"] for c in chapitres.nettoyer_guide(b, CAT, desc(), None)["chapitres"]]
+
+
+def test_bornes():
+    b = bloc(); p = b["chapitres"]["peau"]
+    p["vu"] = [{"texte": " ".join(["mot"] * 60), "etiquette": "a b c d e"}] * 6
+    p["routine"] = p["routine"] * 2
+    g = chapitres.nettoyer_guide(b, CAT, desc(), None)
+    peau = next(c for c in g["chapitres"] if c["id"] == "peau")
+    assert len(peau["vu"]) == 4 and len(peau["vu"][0]["texte"].split()) <= 25 and len(peau["vu"][0]["etiquette"].split()) <= 3
+    assert len(peau["routine"]) == 4
+    b2 = bloc(); b2["chapitres"]["peau"]["routine"] = b2["chapitres"]["peau"]["routine"][:2]
+    assert "peau" not in [c["id"] for c in chapitres.nettoyer_guide(b2, CAT, desc(), None)["chapitres"]]
+
+
+def test_cle_et_picto_hors_liste():
+    b = bloc(); c = b["chapitres"]["peau"]
+    c["produits"] = [{"type": "Crème", "cle": "marque-x"}]; c["routine"][0]["picto"] = "licorne"
+    peau = next(x for x in chapitres.nettoyer_guide(b, CAT, desc(), None)["chapitres"] if x["id"] == "peau")
+    assert peau["produits"] == [{"type": "Crème"}] and "picto" not in peau["routine"][0]
+
+
+def test_aucun_chapitre_valide():
+    b = bloc()
+    for c in b["chapitres"].values():
+        c["afficher"] = False
+    assert chapitres.nettoyer_guide(b, CAT, desc(), None) is None
+
+
+def test_ouverture_vide():
+    b = bloc(); b["ouverture"] = ["  "]
+    assert chapitres.nettoyer_guide(b, CAT, desc(), None) is None
+
+
+def test_entree_invalide():
+    assert chapitres.nettoyer_guide(None, CAT, desc(), None) is None
+    assert chapitres.nettoyer_guide({"ouverture": "x"}, CAT, desc(), None) is None
+
+
+def test_schema_strict():
+    s = chapitres.schema(CAT)
+
+    def parcours(n):
+        if isinstance(n, dict):
+            if n.get("type") == "object":
+                assert n.get("additionalProperties") is False and set(n["required"]) == set(n["properties"])
+            for v in n.values():
+                parcours(v)
+        elif isinstance(n, list):
+            for v in n:
+                parcours(v)
+    parcours(s)
+    enum = s["properties"]["chapitres"]["properties"]["cheveux"]["properties"]["premier"]["properties"]["id"]["enum"]
+    assert enum == [c["id"] for c in CAT["coupes"]]
+    assert "nom" in s["properties"]["chapitres"]["properties"]["peau"]["properties"]["premier"]["properties"]
