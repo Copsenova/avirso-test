@@ -126,13 +126,17 @@ def test_sans_styles_pas_de_bloc_visagiste():
     assert r.get("visagiste") is None
 
 
-def _reponse_guide(system, schema):
+def consigne_de(messages):
+    return " ".join(b.get("text", "") for b in messages[0]["content"] if isinstance(b, dict))
+
+
+def _reponse_guide(system, schema, messages):
     """Réponse factice d'un appel du guide : l'ouverture, ou le chapitre nommé dans la consigne."""
     import json, re, test_chapitres
     b = test_chapitres.bloc()
     if "ouverture" in schema["properties"]:
         return json.dumps({"ouverture": b["ouverture"]})
-    cid = re.search(r"uniquement le chapitre « (\w+) »", system).group(1)
+    cid = re.search(r"uniquement le chapitre « (\w+) »", consigne_de(messages)).group(1)
     return json.dumps({"chapitre": {**b["chapitres"][cid], "chapitre": cid}})
 
 
@@ -143,11 +147,12 @@ class _ClientGuide(_Client):
         schema = k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")
         with getattr(self, "_verrou", threading.Lock()):
             self.appels = getattr(self, "appels", []) + [(system, schema, max_tokens)]
+            self.messages_recus = getattr(self, "messages_recus", []) + [messages]
             self.budgets.append(max_tokens)
         if system == agents.CONSIGNE_ANALYSTE:
             return _Rep('{"fiabilite": "bonne", "limites": [], "cheveux": {"texture": "raides"}, "barbe": {"presence": "aucune"}}')
         if schema and ({"chapitre", "ouverture"} & set(schema["properties"])):
-            return _Rep(_reponse_guide(system, schema))
+            return _Rep(_reponse_guide(system, schema, messages))
         return _Rep(json.dumps(conseil(visagiste={})))
 
 
@@ -184,7 +189,7 @@ def test_un_chapitre_en_echec_n_ecarte_que_lui():
 
     class C(_ClientGuide):
         def create(self, model, max_tokens, system, messages, **k):
-            if "uniquement le chapitre « lunettes »" in system:
+            if "uniquement le chapitre « lunettes »" in consigne_de(messages):
                 raise RuntimeError("panne")
             return super().create(model, max_tokens, system, messages, **k)
     r = agents.analyser(C(), [], CAT_COMPLET, None, styles=test_chapitres.CAT)
@@ -234,3 +239,23 @@ def test_temps_par_etape():
     import test_chapitres
     r = agents.analyser(_ClientGuide(), [], CAT_COMPLET, None, styles=test_chapitres.CAT)
     assert set(r["temps"]) == {"analyste", "conseiller", "guide"} and all(isinstance(v, float) for v in r["temps"].values())
+
+
+def test_cache_partage_entre_les_appels():
+    # 426 000 jetons d'entrée par analyse (vrai essai du 27/11) : les fiches étaient renvoyées à chaque appel sans cache
+    import test_chapitres
+    c = _ClientGuide()
+    agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    hors_analyste = [(s, m) for (s, _, _), m in zip(c.appels, c.messages_recus) if s != agents.CONSIGNE_ANALYSTE]
+    assert len({s for s, _ in hors_analyste}) == 1                         # même consigne système : le préfixe est commun
+    premiers = {m[0]["content"][0]["text"] for _, m in hors_analyste}
+    assert len(premiers) == 1                                               # même message de données en tête
+    assert all(m[0]["content"][0].get("cache_control") == {"type": "ephemeral"} for _, m in hors_analyste)
+
+
+def test_ouverture_lancee_avant_les_chapitres():
+    import test_chapitres
+    c = _ClientGuide()
+    agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    roles = ["ouverture" if s and "ouverture" in s["properties"] else "chapitre" if s and "chapitre" in s["properties"] else "autre" for _, s, _ in c.appels]
+    assert roles.index("ouverture") < min(i for i, r in enumerate(roles) if r == "chapitre")
