@@ -34,6 +34,27 @@ _obj = lambda props: {"type": "object", "properties": props, "required": list(pr
 ENTIERS = {"type": "array", "items": {"type": "integer"}}
 
 
+def _cle(t) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(t)).encode("ascii", "ignore").decode().lower()
+    return "".join(ch for ch in t if ch.isalnum())
+
+
+def resoudre(valeur, table: dict) -> str | None:
+    """Identifiant de la liste pour une valeur donnée par son identifiant ou par son nom affiché (casse, accents,
+    espaces et tirets ignorés). None si rien ne correspond : on ne devine jamais un choix hors liste."""
+    if not isinstance(valeur, str) or not valeur.strip():
+        return None
+    if valeur in table:
+        return valeur
+    v = _cle(valeur)
+    for i, nom in table.items():
+        n = nom if isinstance(nom, str) else (nom.get("nom", "") if isinstance(nom, dict) else nom[0])
+        if v == _cle(i) or v == _cle(n):
+            return i
+    return None
+
+
 def _choix() -> dict:
     return _obj({"choix": S, "pourquoi": S, "autres": {"type": "array", "items": S}, "fiches": ENTIERS})
 
@@ -74,7 +95,7 @@ def nettoyer_visagiste(b, cat: dict, fiches_ok: set, texture: str) -> dict | Non
         x = b.get(cle)
         if not isinstance(x, dict):
             continue
-        ids = [i for i in [x.get("choix"), *(x.get("autres") or [])] if isinstance(i, str) and i in table]
+        ids = [r for i in [x.get("choix"), *(x.get("autres") or [])] if (r := resoudre(i, table))]
         if cle == "coupe" and tex:      # une coupe pensée pour une autre texture de cheveux est écartée
             ids = [i for i in ids if not table[i].get("textures") or tex in table[i]["textures"]]
         ids = list(dict.fromkeys(ids))
@@ -84,13 +105,13 @@ def nettoyer_visagiste(b, cat: dict, fiches_ok: set, texture: str) -> dict | Non
                     "autres": [{"id": i, "nom": table[i]["nom"]} for i in ids[1:3]], "fiches": fiches(x.get("fiches"))}
     vt = b.get("vetements")
     if isinstance(vt, dict):
-        coul = [i for i in dict.fromkeys(vt.get("couleurs") or []) if i in VETEMENTS][:5]
-        evit = [i for i in dict.fromkeys(vt.get("eviter") or []) if i in VETEMENTS and i not in coul][:2]
+        coul = [i for i in dict.fromkeys(resoudre(c, VETEMENTS) for c in (vt.get("couleurs") or [])) if i][:5]
+        evit = [i for i in dict.fromkeys(resoudre(e, VETEMENTS) for e in (vt.get("eviter") or [])) if i and i not in coul][:2]
         if coul:
             out["vetements"] = {"couleurs": [{"id": i, "nom": VETEMENTS[i][0], "hex": VETEMENTS[i][1]} for i in coul],
                                 "eviter": [{"id": i, "nom": VETEMENTS[i][0], "hex": VETEMENTS[i][1]} for i in evit],
                                 "pourquoi": court(vt.get("pourquoi")), "fiches": fiches(vt.get("fiches"))}
-    ou = [o for o in (b.get("outils") or []) if isinstance(o, dict) and o.get("id") in OUTILS]
+    ou = [{**o, "id": r} for o in (b.get("outils") or []) if isinstance(o, dict) and (r := resoudre(o.get("id"), OUTILS))]
     if ou:
         out["outils"] = [{"id": o["id"], "nom": OUTILS[o["id"]], "pourquoi": court(o.get("pourquoi"), 25)} for o in list({o["id"]: o for o in ou}.values())[:6]]
     return out or None

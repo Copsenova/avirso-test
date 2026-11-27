@@ -59,3 +59,12 @@ def test_schema_sans_listes_recopiees():
 def test_bloc_absent_ou_vide():
     assert v.nettoyer_visagiste(None, CAT, FICHES, "crépus") is None
     assert v.nettoyer_visagiste({}, CAT, FICHES, "crépus") is None
+
+
+def test_vetements_et_choix_donnes_par_leur_nom():
+    b = bloc(vetements={"couleurs": ["Bleu marine", "blanc-casse", "Vert olive"], "eviter": ["Lavande"], "pourquoi": "x", "fiches": []},
+             lunettes={"choix": "Rectangulaire", "pourquoi": "x", "autres": ["ronde"], "fiches": []})
+    r = v.nettoyer_visagiste(b, CAT, FICHES, "crépus")
+    assert [c["id"] for c in r["vetements"]["couleurs"]] == ["marine", "blanc-casse", "vert-olive"]
+    assert [c["id"] for c in r["vetements"]["eviter"]] == ["lavande"]
+    assert r["lunettes"]["id"] == "rectangulaire"

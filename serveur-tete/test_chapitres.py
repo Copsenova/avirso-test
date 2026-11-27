@@ -153,3 +153,25 @@ def test_chapitres_en_liste():
     assert [c["id"] for c in g["chapitres"]] == IDS
     s = chapitres.schema(CAT)["properties"]["chapitres"]
     assert s["type"] == "array" and "chapitre" in s["items"]["properties"]
+
+
+def test_identifiant_donne_par_son_nom():
+    # sans « enum » dans le schéma, le modèle peut renvoyer le nom affiché (« Bleu marine ») au lieu de l'identifiant
+    b = bloc()
+    b["chapitres"]["couleurs"] = chap(ferme("Bleu marine"), ferme("vert-olive"), ferme("BORDEAUX"))
+    r = chapitres.nettoyer_guide(b, CAT, {"barbe": {"presence": "aucune"}}, None)
+    c = next(x for x in r["chapitres"] if x["id"] == "couleurs")
+    assert [c["conseils"][k]["id"] for k in ("premier", "sur", "audacieux")] == ["marine", "vert-olive", "bordeaux"]
+
+
+def test_identifiant_inconnu_reste_refuse():
+    b = bloc()
+    b["chapitres"]["couleurs"] = chap(ferme("Fuchsia fluo"), ferme("vert-olive"), ferme("bordeaux"))
+    r = chapitres.nettoyer_guide(b, CAT, {"barbe": {"presence": "aucune"}}, None)
+    assert "couleurs" not in [x["id"] for x in r["chapitres"]]
+
+
+def test_consigne_donne_les_limites_de_mots():
+    # vrai essai du 27/11 : des phrases trop longues finissaient coupées par « … » au nettoyage
+    for limite in ("30 mots", "25 mots", "20 mots"):
+        assert limite in chapitres.CONSIGNE
