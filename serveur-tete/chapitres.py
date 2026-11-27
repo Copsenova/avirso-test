@@ -38,6 +38,21 @@ def schema(cat: dict) -> dict:
     return _obj({"ouverture": _liste(S), "chapitres": _liste(chapitre)})
 
 
+def schema_chapitre(cat: dict) -> dict:
+    """Un seul chapitre : le guide part en un appel par chapitre, en parallèle (le guide entier prenait 188 s, vrai essai du 27/11)."""
+    return _obj({"chapitre": schema(cat)["properties"]["chapitres"]["items"]})
+
+
+SCHEMA_OUVERTURE = _obj({"ouverture": _liste(S)})
+
+
+def barbe_attendue(description: dict, reponses: dict | None) -> bool:
+    """Chapitre barbe : seulement si une barbe se voit ou si la personne a choisi l'objectif « barbe »."""
+    barbe = (description.get("barbe") or {}) if isinstance(description, dict) else {}
+    presence = str(barbe.get("presence", "") if isinstance(barbe, dict) else "").strip().lower()
+    return presence in BARBE_VISIBLE or "barbe" in ((reponses or {}).get("objectifs") or [])
+
+
 CONSIGNE = f"""
 4. Le bloc "guide" : le rendez-vous visagiste que la personne lira écran par écran, AU TUTOIEMENT (« je vois », « ton visage », « je te conseille »),
    comme un visagiste qui lui parle en face : phrases courtes, chaleureuses, un collégien doit comprendre, tout mot du métier expliqué.
@@ -115,16 +130,14 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
             "conseils": {**conseils, "eviter": eviter}, "routine": routine, "produits": produits}
 
 
-def nettoyer_guide(b, cat: dict, description: dict, reponses: dict | None) -> dict | None:
+def nettoyer_guide(b, cat: dict, description: dict, reponses: dict | None, echecs: dict | None = None) -> dict | None:
     """Revérifie le bloc « guide » : listes fermées, bornes, barbe seulement si visible ou demandée. None si rien d'affichable."""
     if isinstance(b, dict) and isinstance(b.get("chapitres"), list):      # forme du schéma : liste d'objets portant leur nom
         b = {**b, "chapitres": {c.get("chapitre"): c for c in b["chapitres"] if isinstance(c, dict) and isinstance(c.get("chapitre"), str)}}
     if not isinstance(b, dict) or not isinstance(b.get("chapitres"), dict) or not isinstance(b.get("ouverture"), list):
         return None
     phrases = [p for p in (_texte(x, 30) for x in b["ouverture"][:3]) if p]
-    barbe = (description.get("barbe") or {}) if isinstance(description, dict) else {}
-    objectifs = (reponses or {}).get("objectifs") or []
-    a_barbe = str(barbe.get("presence", "") if isinstance(barbe, dict) else "").strip().lower() in BARBE_VISIBLE or "barbe" in objectifs
+    a_barbe = barbe_attendue(description, reponses)
     ch = (description.get("cheveux") or {}) if isinstance(description, dict) else {}
     tex = visagiste.TEXTURES.get(str(ch.get("texture", "") if isinstance(ch, dict) else "").strip().lower())
     listes, coupes = _listes(cat), {c["id"]: c for c in cat["coupes"]}
@@ -132,6 +145,9 @@ def nettoyer_guide(b, cat: dict, description: dict, reponses: dict | None) -> di
     for cid in ORDRE:
         if cid == "barbe" and not a_barbe:
             ecartes[cid] = "pas de barbe visible ni demandée"
+            continue
+        if cid in (echecs or {}):
+            ecartes[cid] = f"appel en échec : {echecs[cid]}"
             continue
         try:
             chapitres.append(_chapitre(cid, b["chapitres"].get(cid), listes, coupes, tex))

@@ -130,7 +130,20 @@ SCHEMA_CONSEILLER = _obj({
     "selection": {"type": "array", "items": _obj({"id": {"type": "integer"}, "pourquoi": S})}})
 
 
-def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict | None = None, etape: str = "modèle") -> dict:
+def _compter(compteur: dict | None, r) -> None:
+    u = getattr(r, "usage", None)
+    if compteur is None or u is None:
+        return
+    with _VERROU:
+        for cle, champ in (("entree", "input_tokens"), ("sortie", "output_tokens"), ("cache_lu", "cache_read_input_tokens"), ("cache_ecrit", "cache_creation_input_tokens")):
+            compteur[cle] = compteur.get(cle, 0) + int(getattr(u, champ, 0) or 0)
+
+
+import threading
+_VERROU = threading.Lock()
+
+
+def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict | None = None, etape: str = "modèle", compteur: dict | None = None) -> dict:
     """Appel du modèle. Avec un schéma, l'API contraint la réponse à un JSON valide conforme (sorties structurées),
     ce qui évite les JSON mal formés (guillemets non échappés dans un texte en français). Une seconde tentative si besoin."""
     derniere = None
@@ -138,6 +151,7 @@ def _appeler(client, systeme: str, contenu: list, max_tokens: int, schema: dict 
         # sorties structurées : la réponse texte est un JSON conforme au schéma (passé dans le corps brut, compatible avec tout SDK récent)
         extra = {"extra_body": {"output_config": {"format": {"type": "json_schema", "schema": schema}}}} if schema else {}
         r = client.messages.create(model=MODELE, max_tokens=max_tokens, system=systeme, messages=[{"role": "user", "content": contenu}], **extra)
+        _compter(compteur, r)
         if getattr(r, "stop_reason", "") == "max_tokens":
             derniere = ValueError("réponse coupée (longueur maximale atteinte)"); max_tokens = int(max_tokens * 1.5); continue
         types = [getattr(b, "type", "?") for b in r.content]
@@ -184,8 +198,11 @@ CONSIGNE_VISAGISTE = """
    Chaque "pourquoi" : une phrase (30 mots au plus) qui part de ce qu'on voit sur cette personne. "fiches" : les numéros qui fondent le choix.
 """
 
-CONSIGNE_GUIDE_SEUL = """
-Dans CETTE réponse, rends uniquement le bloc "guide" (les blocs 1 à 3 sont rédigés à part, avec les mêmes données).
+CONSIGNE_OUVERTURE_SEULE = """
+Dans CETTE réponse, rends uniquement "ouverture" du bloc "guide" (le reste est rédigé à part, avec les mêmes données).
+"""
+CONSIGNE_CHAPITRE_SEUL = """
+Dans CETTE réponse, rends uniquement le chapitre « {c} » du bloc "guide", dans "chapitre" (le reste est rédigé à part, avec les mêmes données).
 """
 
 
@@ -221,9 +238,9 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
 def analyser(client, photos: list, catalogue: list, reponses: dict | None = None, styles: dict | None = None) -> dict:
     """photos : contenu des fichiers (face, puis les côtés). Renvoie la description, l'analyse à afficher, les points et les fiches choisies."""
     import time
-    temps, t0 = {}, time.time()
+    temps, t0, jetons = {}, time.time(), {}
     vues = [_image(p) for p in photos[:3]]
-    description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 4000, SCHEMA_ANALYSTE, "analyste")
+    description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 4000, SCHEMA_ANALYSTE, "analyste", jetons)
     temps["analyste"] = round(time.time() - t0, 1)
     cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"], "nature": f.get("nature", ""), "releve": f.get("releve", "")} for f in catalogue]
     entree = {"description": description, "reponses": reponses or {}, "catalogue": cat}
@@ -236,35 +253,49 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
     texte = [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}]
     erreur_guide = None
     if not styles:
-        brut, brut_guide = _appeler(client, consigne, texte, budget, schema, "conseiller"), None
+        brut, brut_guide = _appeler(client, consigne, texte, budget, schema, "conseiller", jetons), None
     else:
         # Le guide (lot 2) part dans un second appel, en parallèle : les trois blocs dans un seul schéma dépassent
         # la taille de grammaire acceptée par l'API (vrai essai du 27/11). Une panne du guide ne bloque pas l'analyse.
         from concurrent.futures import ThreadPoolExecutor
-        def chrono(nom, *a):
-            t1 = time.time()
-            try:
-                return _appeler(*a)
-            finally:
-                temps[nom] = round(time.time() - t1, 1)
-        with ThreadPoolExecutor(2) as pool:
-            f_conseil = pool.submit(chrono, "conseiller", client, consigne, texte, budget, schema, "conseiller")
-            f_guide = pool.submit(chrono, "guide", client, consigne + chapitres.CONSIGNE + CONSIGNE_GUIDE_SEUL, texte, 12000,
-                                  _obj({"guide": chapitres.schema(styles)}), "guide")
+        # Le guide part en appels parallèles (ouverture, puis un appel par chapitre), en même temps que le conseiller :
+        # les trois blocs dans un seul schéma dépassent la taille de grammaire acceptée par l'API, et le guide en un seul
+        # appel prenait 188 s (vrai essai du 27/11). Un chapitre en échec n'écarte que lui.
+        from concurrent.futures import ThreadPoolExecutor
+        base_guide = consigne + chapitres.CONSIGNE
+        a_rediger = [c for c in chapitres.ORDRE if c != "barbe" or chapitres.barbe_attendue(description, reponses)]
+        t1 = time.time()
+        with ThreadPoolExecutor(2 + len(a_rediger)) as pool:
+            f_conseil = pool.submit(_appeler, client, consigne, texte, budget, schema, "conseiller", jetons)
+            f_ouv = pool.submit(_appeler, client, base_guide + CONSIGNE_OUVERTURE_SEULE, texte, 1500, chapitres.SCHEMA_OUVERTURE, "ouverture", jetons)
+            f_chap = {c: pool.submit(_appeler, client, base_guide + CONSIGNE_CHAPITRE_SEUL.format(c=c), texte, 4000,
+                                     chapitres.schema_chapitre(styles), f"chapitre {c}", jetons) for c in a_rediger}
             brut = f_conseil.result()
+            temps["conseiller"] = round(time.time() - t1, 1)
+            echecs, liste = {}, []
+            for c, f in f_chap.items():
+                try:
+                    x = f.result().get("chapitre")
+                    liste.append({**x, "chapitre": c} if isinstance(x, dict) else {"chapitre": c})
+                except Exception as e:
+                    echecs[c] = f"{type(e).__name__}: {str(e)[:120]}"
             try:
-                brut_guide = f_guide.result()
-            except Exception as e:      # le guide manque, l'analyse reste livrée ; la cause est gardée (sans donnée personnelle)
+                brut_guide = {"ouverture": f_ouv.result().get("ouverture"), "chapitres": liste}
+            except Exception as e:      # sans ouverture, pas de guide ; l'analyse reste livrée ; la cause est gardée (sans donnée personnelle)
                 brut_guide, erreur_guide = None, f"{type(e).__name__}: {str(e)[:160]}"
                 print(f"guide en échec : {erreur_guide}", flush=True)
+            temps["guide"] = round(time.time() - t1, 1)
     conseil = nettoyer(brut, catalogue)
     if styles:
         ch = description.get("cheveux")
         conseil["visagiste"] = visagiste.nettoyer_visagiste(brut.get("visagiste"), styles, {f["id"] for f in catalogue}, ch.get("texture", "") if isinstance(ch, dict) else "")
-        conseil["guide"] = chapitres.nettoyer_guide(brut_guide.get("guide") if isinstance(brut_guide, dict) else None, styles, description, reponses)
+        conseil["guide"] = chapitres.nettoyer_guide(brut_guide, styles, description, reponses, echecs)
         if conseil["guide"] is None:
             conseil["guide_erreur"] = erreur_guide or "rejeté au nettoyage"
             print(f"guide absent : {conseil['guide_erreur']}", flush=True)
+    if jetons:
+        conseil["jetons"] = jetons
+        print(f"jetons de l'analyse : {jetons}", flush=True)
     if temps:
         conseil["temps"] = temps
         print(f"temps de l'analyse : {temps}", flush=True)
