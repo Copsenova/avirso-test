@@ -184,6 +184,10 @@ CONSIGNE_VISAGISTE = """
    Chaque "pourquoi" : une phrase (30 mots au plus) qui part de ce qu'on voit sur cette personne. "fiches" : les numéros qui fondent le choix.
 """
 
+CONSIGNE_GUIDE_SEUL = """
+Dans CETTE réponse, rends uniquement le bloc "guide" (les blocs 1 à 3 sont rédigés à part, avec les mêmes données).
+"""
+
 
 def nettoyer(conseil: dict, catalogue: list) -> dict:
     """Ne garde que des fiches du catalogue, des zones connues et des textes de longueur raisonnable."""
@@ -223,14 +227,29 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
     schema, consigne, budget = SCHEMA_CONSEILLER, CONSIGNE_CONSEILLER, 8000
     if styles:      # recommandations du visagiste, choisies dans des listes fermées
         entree["listes"] = visagiste.listes_pour_le_modele(styles)
-        schema = {**SCHEMA_CONSEILLER, "properties": {**SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles), "guide": chapitres.schema(styles)},
-                  "required": [*SCHEMA_CONSEILLER["required"], "visagiste", "guide"]}
-        consigne, budget = CONSIGNE_CONSEILLER + CONSIGNE_VISAGISTE + chapitres.CONSIGNE, 20000      # le guide (lot 2) allonge la réponse
-    brut = _appeler(client, consigne, [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}], budget, schema, "conseiller")
+        schema = {**SCHEMA_CONSEILLER, "properties": {**SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles)},
+                  "required": [*SCHEMA_CONSEILLER["required"], "visagiste"]}
+        consigne, budget = CONSIGNE_CONSEILLER + CONSIGNE_VISAGISTE, 12000
+    texte = [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}]
+    if not styles:
+        brut, brut_guide = _appeler(client, consigne, texte, budget, schema, "conseiller"), None
+    else:
+        # Le guide (lot 2) part dans un second appel, en parallèle : les trois blocs dans un seul schéma dépassent
+        # la taille de grammaire acceptée par l'API (vrai essai du 27/11). Une panne du guide ne bloque pas l'analyse.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(2) as pool:
+            f_conseil = pool.submit(_appeler, client, consigne, texte, budget, schema, "conseiller")
+            f_guide = pool.submit(_appeler, client, consigne + chapitres.CONSIGNE + CONSIGNE_GUIDE_SEUL, texte, 12000,
+                                  _obj({"guide": chapitres.schema(styles)}), "guide")
+            brut = f_conseil.result()
+            try:
+                brut_guide = f_guide.result()
+            except Exception:
+                brut_guide = None
     conseil = nettoyer(brut, catalogue)
     if styles:
         ch = description.get("cheveux")
         conseil["visagiste"] = visagiste.nettoyer_visagiste(brut.get("visagiste"), styles, {f["id"] for f in catalogue}, ch.get("texture", "") if isinstance(ch, dict) else "")
-        conseil["guide"] = chapitres.nettoyer_guide(brut.get("guide"), styles, description, reponses)
+        conseil["guide"] = chapitres.nettoyer_guide(brut_guide.get("guide") if isinstance(brut_guide, dict) else None, styles, description, reponses)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}

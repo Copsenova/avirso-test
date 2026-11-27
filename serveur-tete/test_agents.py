@@ -116,7 +116,7 @@ def test_visagiste_dans_la_reponse():
     r = agents.analyser(c, [], CAT_COMPLET, styles=STYLES)
     assert r["visagiste"]["coupe"]["nom"] == "Afro court"
     assert r["visagiste"]["outils"][0]["id"] == "eponge-twists"
-    assert "visagiste" in c.schemas[-1]["properties"]
+    assert any(s and "visagiste" in s["properties"] for s in c.schemas)      # appels parallèles : ordre non garanti
     assert "afro_court" in c.demande          # le conseiller reçoit les listes où choisir
 
 
@@ -129,13 +129,19 @@ def test_sans_styles_pas_de_bloc_visagiste():
 class _ClientGuide(_Client):
     """Analyste : pas de barbe, cheveux raides ; conseiller : visagiste + guide complet (6 chapitres dont barbe)."""
     def create(self, model, max_tokens, system, messages, **k):
-        self.schemas = getattr(self, "schemas", []) + [k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")]
-        self.budgets.append(max_tokens)
+        import threading
+        with getattr(self, "_verrou", threading.Lock()):
+            schema = k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")
+            self.appels = getattr(self, "appels", []) + [(system, schema, max_tokens)]
+            self.budgets.append(max_tokens)
         if system == agents.CONSIGNE_ANALYSTE:
             return _Rep('{"fiabilite": "bonne", "limites": [], "cheveux": {"texture": "raides"}, "barbe": {"presence": "aucune"}}')
         import json, test_chapitres
-        self.systeme = system
         return _Rep(json.dumps(conseil(visagiste={}, guide=test_chapitres.bloc())))
+
+
+def _appel_guide(c):
+    return [a for a in c.appels if a[1] and "guide" in a[1]["properties"]]
 
 
 def test_analyser_renvoie_le_guide():
@@ -144,8 +150,33 @@ def test_analyser_renvoie_le_guide():
     r = agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
     ids = [x["id"] for x in r["guide"]["chapitres"]]
     assert ids == ["cheveux", "peau", "regard", "lunettes", "couleurs"]      # pas de barbe visible
-    assert "guide" in c.schemas[-1]["required"] and "guide" in c.schemas[-1]["properties"]
-    assert "TUTOIEMENT" in c.systeme and c.budgets[-1] >= 20000
+    (systeme, schema, budget), = _appel_guide(c)
+    assert schema["required"] == ["guide"]
+    assert "TUTOIEMENT" in systeme and budget >= 10000
+
+
+def test_guide_dans_un_appel_separe():
+    # l'API refuse conseiller + visagiste + guide dans un seul schéma (« compiled grammar is too large », vrai essai du 27/11)
+    import test_chapitres
+    c = _ClientGuide()
+    agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    for _, schema, _ in c.appels:
+        if schema:
+            assert not ({"visagiste", "guide"} <= set(schema["properties"]))
+    assert any(s and "visagiste" in s["properties"] for _, s, _ in c.appels)
+
+
+def test_guide_en_echec_ne_bloque_pas_l_analyse():
+    import test_chapitres
+
+    class C(_ClientGuide):
+        def create(self, model, max_tokens, system, messages, **k):
+            s = k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")
+            if s and "guide" in s["properties"]:
+                raise RuntimeError("panne du guide")
+            return super().create(model, max_tokens, system, messages, **k)
+    r = agents.analyser(C(), [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    assert r["ok"] is True and r["guide"] is None and r["accroche"]
 
 
 def test_guide_invalide_donne_none():
@@ -158,14 +189,3 @@ def test_guide_invalide_donne_none():
             return _Rep(json.dumps(conseil(visagiste={}, guide={"ouverture": [], "chapitres": {}})))
     r = agents.analyser(C(), [], CAT_COMPLET, None, styles=STYLES)
     assert r["guide"] is None and r["ok"] is True
-
-
-def test_schema_complet_du_conseiller_reste_petit():
-    # l'API a refusé le schéma complet (conseiller + visagiste + guide) : « compiled grammar is too large »
-    import json, os, chapitres, visagiste
-    styles = json.load(open(os.path.join(os.path.dirname(__file__), "catalogue.json"), encoding="utf-8"))
-    complet = {**agents.SCHEMA_CONSEILLER, "properties": {**agents.SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles), "guide": chapitres.schema(styles)}}
-    texte = json.dumps(complet, ensure_ascii=False)
-    valeurs = texte.count('"enum"')
-    assert valeurs <= 3          # seules les petites listes du conseiller (pictogrammes, zones, produits) restent
-    assert len(texte) < 8000
