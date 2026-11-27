@@ -158,3 +158,14 @@ def test_guide_invalide_donne_none():
             return _Rep(json.dumps(conseil(visagiste={}, guide={"ouverture": [], "chapitres": {}})))
     r = agents.analyser(C(), [], CAT_COMPLET, None, styles=STYLES)
     assert r["guide"] is None and r["ok"] is True
+
+
+def test_schema_complet_du_conseiller_reste_petit():
+    # l'API a refusé le schéma complet (conseiller + visagiste + guide) : « compiled grammar is too large »
+    import json, os, chapitres, visagiste
+    styles = json.load(open(os.path.join(os.path.dirname(__file__), "catalogue.json"), encoding="utf-8"))
+    complet = {**agents.SCHEMA_CONSEILLER, "properties": {**agents.SCHEMA_CONSEILLER["properties"], "visagiste": visagiste.schema(styles), "guide": chapitres.schema(styles)}}
+    texte = json.dumps(complet, ensure_ascii=False)
+    valeurs = texte.count('"enum"')
+    assert valeurs <= 3          # seules les petites listes du conseiller (pictogrammes, zones, produits) restent
+    assert len(texte) < 8000

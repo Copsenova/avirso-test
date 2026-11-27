@@ -34,20 +34,18 @@ _obj = lambda props: {"type": "object", "properties": props, "required": list(pr
 ENTIERS = {"type": "array", "items": {"type": "integer"}}
 
 
-def _choix(ids: list) -> dict:
-    return _obj({"choix": {"type": "string", "enum": ids}, "pourquoi": S, "autres": {"type": "array", "items": {"type": "string", "enum": ids}}, "fiches": ENTIERS})
+def _choix() -> dict:
+    return _obj({"choix": S, "pourquoi": S, "autres": {"type": "array", "items": S}, "fiches": ENTIERS})
 
 
 def schema(cat: dict) -> dict:
-    """Schéma de sortie du bloc « visagiste » : chaque choix est contraint aux listes."""
+    """Schéma de sortie du bloc « visagiste ». Les listes fermées passent par le message (champ "listes") et non par le
+    schéma : recopiées en « enum », elles rendaient la grammaire trop grosse pour l'API (vrai essai du 27/11).
+    nettoyer_visagiste revérifie chaque identifiant."""
     return _obj({
-        "coupe": _choix([c["id"] for c in cat["coupes"]]),
-        "couleur": _choix([c["id"] for c in cat["couleurs"]]),
-        "barbe": _choix([AUCUNE[0]] + [c["id"] for c in cat["barbes"]]),
-        "lunettes": _choix(list(MONTURES)),
-        "vetements": _obj({"couleurs": {"type": "array", "items": {"type": "string", "enum": list(VETEMENTS)}},
-                           "eviter": {"type": "array", "items": {"type": "string", "enum": list(VETEMENTS)}}, "pourquoi": S, "fiches": ENTIERS}),
-        "outils": {"type": "array", "items": _obj({"id": {"type": "string", "enum": list(OUTILS)}, "pourquoi": S})},
+        "coupe": _choix(), "couleur": _choix(), "barbe": _choix(), "lunettes": _choix(),
+        "vetements": _obj({"couleurs": {"type": "array", "items": S}, "eviter": {"type": "array", "items": S}, "pourquoi": S, "fiches": ENTIERS}),
+        "outils": {"type": "array", "items": _obj({"id": S, "pourquoi": S})},
     })
 
 

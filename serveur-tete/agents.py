@@ -174,7 +174,7 @@ def borner(texte, n: int) -> str:
 
 
 CONSIGNE_VISAGISTE = """
-3. Le bloc "visagiste" : en expert (coiffeur, barbier, opticien, conseiller en image), choisis pour cette personne, uniquement dans les listes fournies (champ "listes") :
+3. Le bloc "visagiste" : en expert (coiffeur, barbier, opticien, conseiller en image), choisis pour cette personne, uniquement dans les listes fournies (champ "listes") ; recopie EXACTEMENT les identifiants ("id") de ces listes :
    - "coupe" : la coupe qui lui irait le mieux, compatible avec la texture de ses cheveux (champ "textures" de chaque coupe), et 2 autres possibles ;
    - "couleur" : une couleur de cheveux accordée à son sous-ton (fiches « Couleur de cheveux selon le sous-ton »), proche du naturel si rien ne s'impose, et 2 autres ;
    - "barbe" : le style de barbe selon la forme du visage (fiches « Barbe selon la forme du visage ») ; "aucune" si un visage rasé lui va mieux ou si la pilosité ne se voit pas ;

@@ -46,11 +46,14 @@ def test_texture_indeterminee_ne_filtre_pas():
     assert r["coupe"]["id"] == "raie_lisse"
 
 
-def test_schema_contraint_par_listes():
+def test_schema_sans_listes_recopiees():
+    # vrai essai du 27/11 : l'API refuse une grammaire trop grosse ; les listes passent par le message (champ "listes")
+    # et chaque identifiant est revérifié par nettoyer_visagiste
+    import json
     s = v.schema(CAT)
-    assert s["properties"]["coupe"]["properties"]["choix"]["enum"] == ["taper_twists", "afro_court", "raie_lisse"]
-    assert "aucune" in s["properties"]["barbe"]["properties"]["choix"]["enum"]
-    assert set(s["properties"]["outils"]["items"]["properties"]["id"]["enum"]) == set(v.OUTILS)
+    assert "enum" not in json.dumps(s)
+    assert set(s["properties"]) == {"coupe", "couleur", "barbe", "lunettes", "vetements", "outils"}
+    assert "choix" in s["properties"]["coupe"]["properties"]
 
 
 def test_bloc_absent_ou_vide():
