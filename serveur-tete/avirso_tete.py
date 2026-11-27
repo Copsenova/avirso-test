@@ -46,7 +46,7 @@ image = (
         *[f"wget -q -P /LivePortrait/pw {POIDS}/{f}" for f in FICHIERS],
         f"wget -q -P /LivePortrait/pw {DECOUPE}",
     )
-    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET, "VERSION_SITE": "2026-11-25-visagiste"})
+    .env({"AVEC_ANALYSE": "1" if AVEC_ANALYSE else "0", "SECRET_ANTHROPIC": NOM_SECRET, "VERSION_SITE": "2026-11-27-portrait-relief", "TETE_ANCIENNE": "1" if TETE_ANCIENNE else "0"})
     .add_local_file("essai-generation/tete.py", "/LivePortrait/tete.py")
     .add_local_file("essai-generation/mise_en_scene.py", "/LivePortrait/mise_en_scene.py")
     .add_local_file("essai-generation/couleur.py", "/LivePortrait/couleur.py")
@@ -59,6 +59,25 @@ image = (
 )
 
 app = modal.App("avirso-tete", image=image)
+
+# ---------------------------------------------------------------- portrait studio en relief (27/11) : remplace la « tête qui tourne »
+# Une seule machine : retouche studio identité gardée (Qwen-Image-Edit-2511 + accélération 4 étapes fusionnée, Apache 2.0), détourage
+# (BiRefNet, MIT), profondeur (Depth Anything V2 Small, Apache 2.0), puis la suite d'images qui pivote (relief_images.py).
+# Démarrage depuis un instantané mémoire GPU ; la machine s'arrête 15 s après le dernier client. TETE_ANCIENNE=1 au déploiement : ancienne tête.
+TETE_ANCIENNE = os.environ.get("TETE_ANCIENNE") == "1"
+image_relief = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("torch==2.7.1", "torchvision==0.22.1", "transformers>=4.57", "accelerate", "safetensors", "sentencepiece", "peft>=0.17",
+                 "timm", "kornia", "einops", "pillow", "numpy", "diffusers>=0.36", "opencv-python-headless==4.10.0.84")
+    .env({"HF_HOME": "/poids/hf"})
+    .add_local_file("serveur-tete/relief_images.py", "/root/relief_images.py")
+)
+CONSIGNE_RELIEF = (
+    "Professional cinematic studio portrait photograph of the person in the first image. Keep his or her face exactly identical to the reference "
+    "photos: same facial structure, eyes, eyebrows, nose, lips, skin tone, skin marks, same hair texture, hair length and hairline, same facial hair "
+    "if any. Do not beautify or change the features. Facing the camera. Head and shoulders, eye-level, shot on an 85mm lens (no wide-angle "
+    "distortion). Soft key light from the left, gentle fill, subtle blue rim light on the hair and shoulders, deep graphite seamless studio "
+    "background, plain black crew-neck t-shirt. Ultra-detailed natural skin texture, sharp focus, high-end editorial photo.")
 
 # ---------------------------------------------------------------- essai de coupe par édition d'image (Qwen-Image-Edit-2511, Apache 2.0)
 # Les poids (plusieurs dizaines de Go) sont gardés dans un volume Modal, téléchargés une seule fois. Rien d'autre n'est gardé.
@@ -141,6 +160,52 @@ class Retoucheur:
             return {"ok": False, "erreur": "la retouche a échoué", "detail": f"{type(e).__name__}: {str(e)[:300]}"}
 
 
+@app.cls(image=image_relief, gpu="H100", volumes={"/poids": poids}, timeout=600, scaledown_window=15,
+         enable_memory_snapshot=True, experimental_options={"enable_gpu_snapshot": True})
+class PortraitRelief:
+    @modal.enter(snap=True)
+    def charger(self):
+        import torch
+        from diffusers import QwenImageEditPlusPipeline
+        from transformers import AutoModelForImageSegmentation, pipeline
+        p = QwenImageEditPlusPipeline.from_pretrained(MODELE_COUPE, torch_dtype=torch.bfloat16)
+        p.load_lora_weights("lightx2v/Qwen-Image-Edit-2511-Lightning", weight_name="Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors")
+        p.fuse_lora(); p.unload_lora_weights()
+        self.pipe = p.to("cuda")
+        self.seg = AutoModelForImageSegmentation.from_pretrained("ZhengPeng7/BiRefNet", trust_remote_code=True,
+                                                                 revision="e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4").float().to("cuda").eval()
+        self.prof = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device=0)
+
+    @modal.method()
+    def tournee(self, photos: list[bytes], pas: int = 8) -> dict:
+        """Même réponse que l'ancienne tête qui tourne (angles, images WebP transparentes, cote), avec relief=True."""
+        import base64, io, time
+        import numpy as np, torch
+        from PIL import Image, ImageOps
+        from torchvision import transforms
+        import relief_images
+        if not photos:
+            return {"ok": True, "reveil": True}
+        t0 = time.time()
+        try:
+            ims = []
+            for b in photos[:3]:
+                im = ImageOps.exif_transpose(Image.open(io.BytesIO(b))).convert("RGB"); im.thumbnail((1024, 1024)); ims.append(im)
+            portrait = self.pipe(image=ims, prompt=CONSIGNE_RELIEF, negative_prompt=" ", num_inference_steps=pas, true_cfg_scale=1.0, guidance_scale=1.0,
+                                 generator=torch.manual_seed(0), height=1024, width=816).images[0]
+            tf = transforms.Compose([transforms.Resize((1024, 1024)), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            with torch.no_grad():
+                m = self.seg(tf(portrait).unsqueeze(0).to("cuda"))[-1].sigmoid().cpu()[0, 0].numpy()
+            masque = np.asarray(Image.fromarray((m * 255).astype(np.uint8)).resize(portrait.size))
+            d = np.asarray(self.prof(portrait)["depth"].resize(portrait.size)).astype(np.float32)
+            d = ((d - d.min()) / (d.max() - d.min() + 1e-6) * 255).astype(np.uint8)
+            v = relief_images.vues(np.asarray(portrait), masque, d, cote=1024)
+            return {"ok": True, "relief": True, "transparent": True, "cote": 1024, "angles": [float(a) for a, _ in v],
+                    "images": [base64.b64encode(relief_images.webp(im)).decode() for _, im in v], "secondes": round(time.time() - t0, 1)}
+        except Exception as e:      # rien n'est gardé ; la personne peut réessayer
+            return {"ok": False, "erreur": "le calcul a échoué", "detail": str(e)[:300]}
+
+
 @app.function(gpu="T4", cpu=8.0, memory=8192, timeout=900, max_containers=1, scaledown_window=150)
 def fabriquer(photos: list[bytes], cote: int = 960) -> dict:
     """Fabrique la suite d'images. `photos` : contenu des fichiers. Renvoie les images (WebP) et leurs angles."""
@@ -216,7 +281,10 @@ def site():
 
     @web.post("/reveil")
     async def reveil():
-        await fabriquer.spawn.aio([])      # aucune donnée envoyée : sert seulement à démarrer la machine de calcul
+        # portrait en relief : pas de réveil anticipé (la carte graphique attendrait à vide pendant la prise de vue) ;
+        # il démarre en 30 à 45 s depuis son instantané au moment de l'envoi
+        if TETE_ANCIENNE:
+            await fabriquer.spawn.aio([])      # aucune donnée envoyée : sert seulement à démarrer la machine de calcul
         return {"ok": True}
 
     @web.post("/reveil-coupes")
@@ -236,7 +304,7 @@ def site():
             if not (c[:3] == b"\xff\xd8\xff" or c[:8] == b"\x89PNG\r\n\x1a\n" or c[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1", b"ftypheif") or c[:4] == b"RIFF"):
                 raise HTTPException(415, "format de photo non reconnu (JPEG, PNG, HEIC ou WebP)")
             contenus.append(c)
-        appel = await fabriquer.spawn.aio(contenus)
+        appel = await (fabriquer.spawn.aio(contenus) if TETE_ANCIENNE else PortraitRelief().tournee.spawn.aio(contenus))
         return {"id": appel.object_id}
 
     @web.post("/analyses")
