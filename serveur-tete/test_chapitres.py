@@ -175,3 +175,14 @@ def test_consigne_donne_les_limites_de_mots():
     # vrai essai du 27/11 : des phrases trop longues finissaient coupées par « … » au nettoyage
     for limite in ("30 mots", "25 mots", "20 mots"):
         assert limite in chapitres.CONSIGNE
+
+
+def test_chapitre_ecarte_donne_sa_raison():
+    # vrai essai du 27/11 : lunettes et couleurs écartées sans qu'on sache pourquoi
+    b = bloc()
+    b["chapitres"]["couleurs"] = chap(ferme("Fuchsia fluo"), ferme("vert-olive"), ferme("bordeaux"))
+    b["chapitres"]["lunettes"] = {**b["chapitres"]["lunettes"], "afficher": False}
+    r = chapitres.nettoyer_guide(b, CAT, {"barbe": {"presence": "aucune"}}, None)
+    assert r["ecartes"]["couleurs"].startswith("premier : identifiant hors liste")
+    assert r["ecartes"]["lunettes"] == "afficher faux"
+    assert "barbe" in r["ecartes"]

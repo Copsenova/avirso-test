@@ -66,9 +66,15 @@ def _texte(t, n: int) -> str:
     return borner(t, n) if isinstance(t, str) else ""
 
 
-def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict | None:
-    if not isinstance(c, dict) or c.get("afficher") is not True:
-        return None
+class _Ecarte(Exception):
+    """Raison (sans donnée personnelle) pour laquelle un chapitre n'est pas affiché."""
+
+
+def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
+    if not isinstance(c, dict):
+        raise _Ecarte("absent")
+    if c.get("afficher") is not True:
+        raise _Ecarte("afficher faux")
     vu = [{"texte": _texte(v.get("texte"), 25), **({"etiquette": e} if (e := _texte(v.get("etiquette"), 3)) else {})}
           for v in (c.get("vu") or [])[:4] if isinstance(v, dict) and _texte(v.get("texte"), 25)]
     sens = [s for s in (_texte(x, 30) for x in (c.get("sens") or [])[:3]) if s]
@@ -80,23 +86,26 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict 
     for rang in ("premier", "sur", "audacieux"):
         x = c.get(rang)
         if not isinstance(x, dict) or not (pourquoi := _texte(x.get("pourquoi"), 30)):
-            return None
+            raise _Ecarte(f"{rang} : pourquoi manquant")
         if cid in listes:
             i = visagiste.resoudre(x.get("id"), listes[cid]) or visagiste.resoudre(x.get("nom"), listes[cid])
             if i is None:
-                return None
+                raise _Ecarte(f"{rang} : identifiant hors liste ({str(x.get('id'))[:30]!r}, nom {str(x.get('nom'))[:30]!r})")
             if cid == "cheveux" and tex and coupes[i].get("textures") and tex not in coupes[i]["textures"]:
-                return None
+                raise _Ecarte(f"{rang} : coupe incompatible avec la texture")
             conseils[rang] = {"id": i, "nom": listes[cid][i], "pourquoi": pourquoi, **({"essai": "coupe"} if cid == "cheveux" else {})}
         else:
             if not (nom := _texte(x.get("nom"), 8)):
-                return None
+                raise _Ecarte(f"{rang} : nom manquant")
             conseils[rang] = {"id": f"{cid}-{rang}", "nom": nom, "pourquoi": pourquoi}
-    if len({k["nom"].lower() for k in conseils.values()}) < 3 or not (eviter := _texte(c.get("eviter"), 30)):
-        return None
+    if len({k["nom"].lower() for k in conseils.values()}) < 3:
+        raise _Ecarte("trois propositions non distinctes")
+    if not (eviter := _texte(c.get("eviter"), 30)):
+        raise _Ecarte("eviter manquant")
     objectif = _texte(c.get("objectif"), 20)
-    if len(vu) < 2 or not sens or not objectif or len(routine) < 3 or not produits:
-        return None
+    manque = [n for n, ok in (("vu", len(vu) >= 2), ("sens", sens), ("objectif", objectif), ("routine", len(routine) >= 3), ("produits", produits)) if not ok]
+    if manque:
+        raise _Ecarte("incomplet : " + ", ".join(manque))
     titre, picto, zones = TABLE[cid]
     return {"id": cid, "titre": titre, "picto": picto, "zones": zones, "vu": vu, "sens": sens, "objectif": objectif,
             "conseils": {**conseils, "eviter": eviter}, "routine": routine, "produits": produits}
@@ -115,7 +124,17 @@ def nettoyer_guide(b, cat: dict, description: dict, reponses: dict | None) -> di
     ch = (description.get("cheveux") or {}) if isinstance(description, dict) else {}
     tex = visagiste.TEXTURES.get(str(ch.get("texture", "") if isinstance(ch, dict) else "").strip().lower())
     listes, coupes = _listes(cat), {c["id"]: c for c in cat["coupes"]}
-    chapitres = [x for cid in ORDRE if (cid != "barbe" or a_barbe) and (x := _chapitre(cid, b["chapitres"].get(cid), listes, coupes, tex))]
+    chapitres, ecartes = [], {}
+    for cid in ORDRE:
+        if cid == "barbe" and not a_barbe:
+            ecartes[cid] = "pas de barbe visible ni demandée"
+            continue
+        try:
+            chapitres.append(_chapitre(cid, b["chapitres"].get(cid), listes, coupes, tex))
+        except _Ecarte as e:
+            ecartes[cid] = str(e)
+    if ecartes:
+        print(f"chapitres écartés : {ecartes}", flush=True)
     if not phrases or not chapitres:
         return None
-    return {"profil": {"barbe": a_barbe}, "ouverture": {"phrases": phrases}, "chapitres": chapitres}
+    return {"profil": {"barbe": a_barbe}, "ouverture": {"phrases": phrases}, "chapitres": chapitres, "ecartes": ecartes}
