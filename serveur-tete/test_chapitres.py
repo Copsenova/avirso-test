@@ -207,3 +207,23 @@ def test_marge_avant_de_couper():
     assert chapitres._texte("Laver toutes les 2 à 3 semaines", 6) == "Laver toutes les 2 à 3 semaines"   # 7 mots pour 6 demandés
     long = " ".join(["mot"] * 40)
     assert len(chapitres._texte(long, 20).split()) <= 30                                           # au-delà de la marge, on coupe
+
+
+def test_produit_garde_sa_raison():
+    # 27/11 : Cyrille veut chaque produit avec sa raison liée à la personne (« une crème solaire, parce que tes taches… »)
+    b = bloc()
+    b["chapitres"]["peau"]["produits"] = [{"type": "Protection solaire SPF 50", "cle": "spf50", "pourquoi": "Tes taches de rousseur foncent vite au soleil."},
+                                         {"type": "Nettoyant doux", "cle": "nettoyant", "pourquoi": ""}]
+    peau = next(c for c in chapitres.nettoyer_guide(b, CAT, desc(), None)["chapitres"] if c["id"] == "peau")
+    assert peau["produits"][0] == {"type": "Protection solaire SPF 50", "cle": "spf50", "pourquoi": "Tes taches de rousseur foncent vite au soleil."}
+    assert "pourquoi" not in peau["produits"][1]
+    s = json.dumps(chapitres.schema(CAT))
+    assert '"pourquoi"' in s.split('"produits"')[1][:200]
+    assert "pourquoi" in chapitres.CONSIGNE.split('"produits" :')[1][:2000]
+
+
+def test_pieces_de_vetement_reprennent_la_raison_des_couleurs():
+    b = bloc()
+    b["chapitres"]["couleurs"] = {**chap(ferme("marine"), ferme("vert-olive"), ferme("bordeaux")), "produits": []}
+    c = next(x for x in chapitres.nettoyer_guide(b, CAT, {"barbe": {"presence": "aucune"}}, None)["chapitres"] if x["id"] == "couleurs")
+    assert all(p.get("pourquoi") for p in c["produits"])

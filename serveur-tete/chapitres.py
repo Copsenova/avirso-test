@@ -34,7 +34,7 @@ def schema(cat: dict) -> dict:
     choix = _obj({"id": S, "nom": S, "pourquoi": S})
     chapitre = _obj({"chapitre": S, "afficher": {"type": "boolean"}, "vu": _liste(_obj({"texte": S, "etiquette": S})), "sens": _liste(S),
                      "objectif": S, "premier": choix, "sur": choix, "audacieux": choix, "eviter": S,
-                     "routine": _liste(_obj({"geste": S, "detail": S, "picto": S})), "produits": _liste(_obj({"type": S, "cle": S}))})
+                     "routine": _liste(_obj({"geste": S, "detail": S, "picto": S})), "produits": _liste(_obj({"type": S, "cle": S, "pourquoi": S}))})
     return _obj({"ouverture": _liste(S), "chapitres": _liste(chapitre)})
 
 
@@ -103,7 +103,8 @@ CONSIGNE = f"""
        "eviter" : une chose à éviter, avec la raison.
      "routine" : 3 ou 4 gestes, chacun avec sa fréquence dans "detail" et un "picto" parmi : {", ".join(PICTOS)} (ou "").
      "produits" : 1 à 4 types de produits (jamais de marque) ; pour "couleurs", des pièces de vêtement (ex. « Un haut vert olive ») ;
-       pour "lunettes", la monture à essayer chez un opticien ; "cle" parmi : {", ".join(CLES)} (ou "").
+       pour "lunettes", la monture à essayer chez un opticien ; "cle" parmi : {", ".join(CLES)} (ou "") ;
+       "pourquoi" : 20 mots au plus, la raison POUR CETTE PERSONNE, reliée à ce que tu as vu (ex. « Tes taches de rousseur foncent vite au soleil. »).
    Un savoir-faire ou une tendance n'est jamais présenté comme un fait prouvé. Aucune note de beauté, aucun défaut, aucun diagnostic.
 """
 
@@ -135,7 +136,8 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
     sens = [s for s in (_texte(x, 30) for x in (c.get("sens") or [])[:3]) if s]
     routine = [{"geste": _texte(g.get("geste"), 6), "detail": _texte(g.get("detail"), 20), **({"picto": g["picto"]} if g.get("picto") in PICTOS else {})}
                for g in (c.get("routine") or [])[:4] if isinstance(g, dict) and _texte(g.get("geste"), 6)]
-    produits = [{"type": _texte(p.get("type"), 8), **({"cle": p["cle"]} if p.get("cle") in CLES else {})}
+    produits = [{"type": _texte(p.get("type"), 8), **({"cle": p["cle"]} if p.get("cle") in CLES else {}),
+                 **({"pourquoi": w} if (w := _texte(p.get("pourquoi"), 20)) else {})}
                 for p in (c.get("produits") or [])[:4] if isinstance(p, dict) and _texte(p.get("type"), 8)]
     conseils = {}
     for rang in ("premier", "sur", "audacieux"):
@@ -159,7 +161,8 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
         raise _Ecarte("eviter manquant")
     objectif = _texte(c.get("objectif"), 20)
     if cid == "couleurs" and not produits:      # une palette n'a pas de produit de soin : les pièces viennent des couleurs choisies (liste fermée)
-        produits = [{"type": f"Un vêtement {conseils[r]['nom'][:1].lower()}{conseils[r]['nom'][1:]}"} for r in ("premier", "sur", "audacieux")]
+        produits = [{"type": f"Un vêtement {conseils[r]['nom'][:1].lower()}{conseils[r]['nom'][1:]}", "pourquoi": _texte(conseils[r]["pourquoi"], 20)}
+                    for r in ("premier", "sur", "audacieux")]
     manque = [n for n, ok in (("vu", len(vu) >= 2), ("sens", sens), ("objectif", objectif), ("routine", len(routine) >= 3), ("produits", produits)) if not ok]
     if manque:
         raise _Ecarte("incomplet : " + ", ".join(manque))
