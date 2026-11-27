@@ -231,6 +231,7 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
                   "required": [*SCHEMA_CONSEILLER["required"], "visagiste"]}
         consigne, budget = CONSIGNE_CONSEILLER + CONSIGNE_VISAGISTE, 12000
     texte = [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}]
+    erreur_guide = None
     if not styles:
         brut, brut_guide = _appeler(client, consigne, texte, budget, schema, "conseiller"), None
     else:
@@ -244,12 +245,16 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
             brut = f_conseil.result()
             try:
                 brut_guide = f_guide.result()
-            except Exception:
-                brut_guide = None
+            except Exception as e:      # le guide manque, l'analyse reste livrée ; la cause est gardée (sans donnée personnelle)
+                brut_guide, erreur_guide = None, f"{type(e).__name__}: {str(e)[:160]}"
+                print(f"guide en échec : {erreur_guide}", flush=True)
     conseil = nettoyer(brut, catalogue)
     if styles:
         ch = description.get("cheveux")
         conseil["visagiste"] = visagiste.nettoyer_visagiste(brut.get("visagiste"), styles, {f["id"] for f in catalogue}, ch.get("texture", "") if isinstance(ch, dict) else "")
         conseil["guide"] = chapitres.nettoyer_guide(brut_guide.get("guide") if isinstance(brut_guide, dict) else None, styles, description, reponses)
+        if conseil["guide"] is None:
+            conseil["guide_erreur"] = erreur_guide or "rejeté au nettoyage"
+            print(f"guide absent : {conseil['guide_erreur']}", flush=True)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}

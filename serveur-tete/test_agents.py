@@ -177,6 +177,19 @@ def test_guide_en_echec_ne_bloque_pas_l_analyse():
             return super().create(model, max_tokens, system, messages, **k)
     r = agents.analyser(C(), [], CAT_COMPLET, None, styles=test_chapitres.CAT)
     assert r["ok"] is True and r["guide"] is None and r["accroche"]
+    assert r["guide_erreur"].startswith("RuntimeError")      # diagnostic sans donnée personnelle
+
+
+def test_guide_rejete_au_nettoyage_est_signale():
+    import json
+
+    class C(_ClientGuide):
+        def create(self, model, max_tokens, system, messages, **k):
+            if system == agents.CONSIGNE_ANALYSTE:
+                return _Rep('{"fiabilite": "bonne", "limites": []}')
+            return _Rep(json.dumps(conseil(visagiste={}, guide={"ouverture": [], "chapitres": []})))
+    r = agents.analyser(C(), [], CAT_COMPLET, None, styles=STYLES)
+    assert r["guide"] is None and r["guide_erreur"] == "rejeté au nettoyage"
 
 
 def test_guide_invalide_donne_none():
