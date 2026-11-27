@@ -250,7 +250,7 @@ def fabriquer(photos: list[bytes], cote: int = 960) -> dict:
         shutil.rmtree(dossier, ignore_errors=True)      # rien n'est gardé
 
 
-@app.function(timeout=300, max_containers=4, secrets=SECRETS)
+@app.function(timeout=600, max_containers=4, secrets=SECRETS)      # 199 s mesurés à chaud le 27/11 : marge
 def analyser_photos(photos: list[bytes], reponses: dict | None = None) -> dict:
     """Analyste, chercheur et conseiller : description de l'apparence, choix des fiches sourcées, analyse à afficher. Rien n'est gardé."""
     import json, sys, time

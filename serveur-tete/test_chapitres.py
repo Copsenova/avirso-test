@@ -186,3 +186,17 @@ def test_chapitre_ecarte_donne_sa_raison():
     assert r["ecartes"]["couleurs"].startswith("premier : identifiant hors liste")
     assert r["ecartes"]["lunettes"] == "afficher faux"
     assert "barbe" in r["ecartes"]
+
+
+def test_couleurs_sans_produits_garde_le_chapitre():
+    # vrai essai du 27/11 : « couleurs » écarté (incomplet : produits) ; une palette n'a pas de produit au sens soin
+    b = bloc()
+    b["chapitres"]["couleurs"] = {**chap(ferme("marine"), ferme("vert-olive"), ferme("bordeaux")), "produits": []}
+    r = chapitres.nettoyer_guide(b, CAT, {"barbe": {"presence": "aucune"}}, None)
+    c = next(x for x in r["chapitres"] if x["id"] == "couleurs")
+    assert [p["type"] for p in c["produits"]] == ["Un vêtement bleu marine", "Un vêtement vert olive", "Un vêtement bordeaux"]
+
+
+def test_consigne_lunettes_meme_sans_lunettes_portees():
+    assert "même si la personne ne porte pas de lunettes" in chapitres.CONSIGNE
+    assert "Un haut vert olive" in chapitres.CONSIGNE

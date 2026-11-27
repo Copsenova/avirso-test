@@ -220,8 +220,11 @@ def nettoyer(conseil: dict, catalogue: list) -> dict:
 
 def analyser(client, photos: list, catalogue: list, reponses: dict | None = None, styles: dict | None = None) -> dict:
     """photos : contenu des fichiers (face, puis les côtés). Renvoie la description, l'analyse à afficher, les points et les fiches choisies."""
+    import time
+    temps, t0 = {}, time.time()
     vues = [_image(p) for p in photos[:3]]
     description = _appeler(client, CONSIGNE_ANALYSTE, vues + [{"type": "text", "text": "Voici les photos (face, puis les deux côtés). Décris l'apparence selon la forme demandée."}], 4000, SCHEMA_ANALYSTE, "analyste")
+    temps["analyste"] = round(time.time() - t0, 1)
     cat = [{"id": f["id"], "sujet": f["sujet"], "titre": f["titre"], "texte": f["texte"][:400], "niveau": f["niveau"], "nature": f.get("nature", ""), "releve": f.get("releve", "")} for f in catalogue]
     entree = {"description": description, "reponses": reponses or {}, "catalogue": cat}
     schema, consigne, budget = SCHEMA_CONSEILLER, CONSIGNE_CONSEILLER, 8000
@@ -238,9 +241,15 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
         # Le guide (lot 2) part dans un second appel, en parallèle : les trois blocs dans un seul schéma dépassent
         # la taille de grammaire acceptée par l'API (vrai essai du 27/11). Une panne du guide ne bloque pas l'analyse.
         from concurrent.futures import ThreadPoolExecutor
+        def chrono(nom, *a):
+            t1 = time.time()
+            try:
+                return _appeler(*a)
+            finally:
+                temps[nom] = round(time.time() - t1, 1)
         with ThreadPoolExecutor(2) as pool:
-            f_conseil = pool.submit(_appeler, client, consigne, texte, budget, schema, "conseiller")
-            f_guide = pool.submit(_appeler, client, consigne + chapitres.CONSIGNE + CONSIGNE_GUIDE_SEUL, texte, 12000,
+            f_conseil = pool.submit(chrono, "conseiller", client, consigne, texte, budget, schema, "conseiller")
+            f_guide = pool.submit(chrono, "guide", client, consigne + chapitres.CONSIGNE + CONSIGNE_GUIDE_SEUL, texte, 12000,
                                   _obj({"guide": chapitres.schema(styles)}), "guide")
             brut = f_conseil.result()
             try:
@@ -256,5 +265,8 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
         if conseil["guide"] is None:
             conseil["guide_erreur"] = erreur_guide or "rejeté au nettoyage"
             print(f"guide absent : {conseil['guide_erreur']}", flush=True)
+    if temps:
+        conseil["temps"] = temps
+        print(f"temps de l'analyse : {temps}", flush=True)
     return {"ok": True, "description": description, **conseil, "fiabilite": description.get("fiabilite", "indéterminé"),
             "limites": description.get("limites", []), "modele": MODELE}

@@ -202,3 +202,9 @@ def test_guide_invalide_donne_none():
             return _Rep(json.dumps(conseil(visagiste={}, guide={"ouverture": [], "chapitres": {}})))
     r = agents.analyser(C(), [], CAT_COMPLET, None, styles=STYLES)
     assert r["guide"] is None and r["ok"] is True
+
+
+def test_temps_par_etape():
+    import test_chapitres
+    r = agents.analyser(_ClientGuide(), [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    assert set(r["temps"]) == {"analyste", "conseiller", "guide"} and all(isinstance(v, float) for v in r["temps"].values())

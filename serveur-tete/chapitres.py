@@ -46,7 +46,8 @@ CONSIGNE = f"""
    - "ouverture" : 3 phrases au plus, dans cet ordre : la forme de son visage, ses cheveux, sa peau et son sous-ton.
    - "chapitres" : une liste, un objet par chapitre, avec "chapitre" = cheveux, peau, barbe, regard (yeux et sourcils), lunettes ou
      couleurs (des vêtements), dans cet ordre. Pour chacun :
-     "afficher" : false si la description ne donne pas assez de matière fiable ; pour "barbe", false si aucune barbe n'est visible
+     "afficher" : false si la description ne donne pas assez de matière fiable ; "lunettes" s'affiche même si la personne ne porte pas de lunettes
+       (le choix d'une monture, de vue ou de soleil, dépend de la forme du visage) ; pour "barbe", false si aucune barbe n'est visible
        et que la personne n'a pas choisi l'objectif « barbe » (tu ne devines jamais le genre).
      "vu" : 2 à 4 constats tirés de la description, rien d'inventé ; "etiquette" : 1 à 3 mots (ex. « Type 4A », « Dense »), ou "".
      "sens" : 1 à 3 phrases : ce que ça veut dire pour elle. "objectif" : une phrase.
@@ -56,7 +57,8 @@ CONSIGNE = f"""
        EXACTEMENT un identifiant du champ « listes » ("nom" : "") ; peau et regard : "nom" court, tiré des fiches choisies ("id" : "").
        "eviter" : une chose à éviter, avec la raison.
      "routine" : 3 ou 4 gestes, chacun avec sa fréquence dans "detail" et un "picto" parmi : {", ".join(PICTOS)} (ou "").
-     "produits" : 1 à 4 types de produits (jamais de marque) ; "cle" parmi : {", ".join(CLES)} (ou "").
+     "produits" : 1 à 4 types de produits (jamais de marque) ; pour "couleurs", des pièces de vêtement (ex. « Un haut vert olive ») ;
+       pour "lunettes", la monture à essayer chez un opticien ; "cle" parmi : {", ".join(CLES)} (ou "").
    Un savoir-faire ou une tendance n'est jamais présenté comme un fait prouvé. Aucune note de beauté, aucun défaut, aucun diagnostic.
 """
 
@@ -103,6 +105,8 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
     if not (eviter := _texte(c.get("eviter"), 30)):
         raise _Ecarte("eviter manquant")
     objectif = _texte(c.get("objectif"), 20)
+    if cid == "couleurs" and not produits:      # une palette n'a pas de produit de soin : les pièces viennent des couleurs choisies (liste fermée)
+        produits = [{"type": f"Un vêtement {conseils[r]['nom'][:1].lower()}{conseils[r]['nom'][1:]}"} for r in ("premier", "sur", "audacieux")]
     manque = [n for n, ok in (("vu", len(vu) >= 2), ("sens", sens), ("objectif", objectif), ("routine", len(routine) >= 3), ("produits", produits)) if not ok]
     if manque:
         raise _Ecarte("incomplet : " + ", ".join(manque))
