@@ -109,8 +109,16 @@ CONSIGNE = f"""
 
 
 def _texte(t, n: int) -> str:
+    """La consigne demande n mots ; on ne coupe qu'au-delà d'une marge (moitié en plus, 4 mots au moins) : un texte qui
+    dépasse de peu reste entier plutôt que de finir par « … » (vrais essais du 27/11)."""
     from agents import borner      # import tardif : agents importe ce module
-    return borner(t, n) if isinstance(t, str) else ""
+    return borner(t, n + max(4, n // 2)) if isinstance(t, str) else ""
+
+
+def _etiquette(t) -> str:
+    """Badge court : 4 mots au plus, sans la marge des phrases."""
+    from agents import borner
+    return borner(t, 4) if isinstance(t, str) else ""
 
 
 class _Ecarte(Exception):
@@ -122,7 +130,7 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
         raise _Ecarte("absent")
     if c.get("afficher") is not True:
         raise _Ecarte("afficher faux")
-    vu = [{"texte": _texte(v.get("texte"), 25), **({"etiquette": e} if (e := _texte(v.get("etiquette"), 3)) else {})}
+    vu = [{"texte": _texte(v.get("texte"), 25), **({"etiquette": e} if (e := _etiquette(v.get("etiquette"))) else {})}
           for v in (c.get("vu") or [])[:4] if isinstance(v, dict) and _texte(v.get("texte"), 25)]
     sens = [s for s in (_texte(x, 30) for x in (c.get("sens") or [])[:3]) if s]
     routine = [{"geste": _texte(g.get("geste"), 6), "detail": _texte(g.get("detail"), 20), **({"picto": g["picto"]} if g.get("picto") in PICTOS else {})}

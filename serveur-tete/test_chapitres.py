@@ -87,7 +87,7 @@ def test_bornes():
     p["routine"] = p["routine"] * 2
     g = chapitres.nettoyer_guide(b, CAT, desc(), None)
     peau = next(c for c in g["chapitres"] if c["id"] == "peau")
-    assert len(peau["vu"]) == 4 and len(peau["vu"][0]["texte"].split()) <= 25 and len(peau["vu"][0]["etiquette"].split()) <= 3
+    assert len(peau["vu"]) == 4 and len(peau["vu"][0]["texte"].split()) <= 37 and len(peau["vu"][0]["etiquette"].split()) <= 4
     assert len(peau["routine"]) == 4
     b2 = bloc(); b2["chapitres"]["peau"]["routine"] = b2["chapitres"]["peau"]["routine"][:2]
     assert "peau" not in [c["id"] for c in chapitres.nettoyer_guide(b2, CAT, desc(), None)["chapitres"]]
@@ -200,3 +200,10 @@ def test_couleurs_sans_produits_garde_le_chapitre():
 def test_consigne_lunettes_meme_sans_lunettes_portees():
     assert "même si la personne ne porte pas de lunettes" in chapitres.CONSIGNE
     assert "Un haut vert olive" in chapitres.CONSIGNE
+
+
+def test_marge_avant_de_couper():
+    # vrais essais du 27/11 : 3 à 4 textes coupés par « … » à chaque analyse, pour quelques mots de trop
+    assert chapitres._texte("Laver toutes les 2 à 3 semaines", 6) == "Laver toutes les 2 à 3 semaines"   # 7 mots pour 6 demandés
+    long = " ".join(["mot"] * 40)
+    assert len(chapitres._texte(long, 20).split()) <= 30                                           # au-delà de la marge, on coupe
