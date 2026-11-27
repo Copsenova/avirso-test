@@ -130,6 +130,26 @@ def test_schema_strict():
             for v in n:
                 parcours(v)
     parcours(s)
-    enum = s["properties"]["chapitres"]["properties"]["cheveux"]["properties"]["premier"]["properties"]["id"]["enum"]
-    assert enum == [c["id"] for c in CAT["coupes"]]
-    assert "nom" in s["properties"]["chapitres"]["properties"]["peau"]["properties"]["premier"]["properties"]
+    # le schéma reste petit : les listes fermées sont dans le message (champ « listes ») et revérifiées par nettoyer_guide,
+    # pas recopiées dans le schéma (sinon l'API refuse une grammaire trop grosse — vrai essai du 27/11)
+    import json as _json
+    assert "enum" not in _json.dumps(s)
+    assert len(_json.dumps(s)) < 4000
+    assert all(p in chapitres.CONSIGNE for p in chapitres.PICTOS) and all(k in chapitres.CONSIGNE for k in chapitres.CLES)
+    assert "nom" in s["properties"]["chapitres"]["items"]["properties"]["premier"]["properties"]
+
+
+def test_chapitres_en_liste():
+    # forme renvoyée par l'IA depuis le 27/11 : une liste d'objets « chapitre », décrite une seule fois dans le schéma
+    b = bloc()
+    liste = []
+    for cid, c in b["chapitres"].items():
+        x = copy.deepcopy(c); x["chapitre"] = cid
+        for rang in ("premier", "sur", "audacieux"):
+            x[rang] = {"id": x[rang].get("id", ""), "nom": x[rang].get("nom", ""), "pourquoi": x[rang]["pourquoi"]}
+        liste.append(x)
+    b["chapitres"] = liste
+    g = chapitres.nettoyer_guide(b, CAT, desc(), None)
+    assert [c["id"] for c in g["chapitres"]] == IDS
+    s = chapitres.schema(CAT)["properties"]["chapitres"]
+    assert s["type"] == "array" and "chapitre" in s["items"]["properties"]

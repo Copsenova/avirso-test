@@ -28,33 +28,33 @@ def _listes(cat: dict) -> dict:
 
 
 def schema(cat: dict) -> dict:
-    """Schéma strict du bloc « guide » : un objet par chapitre, choix contraints aux listes quand elles existent."""
-    listes = _listes(cat)
-
-    def chapitre(cid):
-        choix = _obj({"id": {"type": "string", "enum": list(listes[cid])}, "pourquoi": S}) if cid in listes else _obj({"nom": S, "pourquoi": S})
-        return _obj({"afficher": {"type": "boolean"}, "vu": _liste(_obj({"texte": S, "etiquette": S})), "sens": _liste(S), "objectif": S,
-                     "premier": choix, "sur": choix, "audacieux": choix, "eviter": S,
-                     "routine": _liste(_obj({"geste": S, "detail": S, "picto": {"type": "string", "enum": PICTOS + [""]}})),
-                     "produits": _liste(_obj({"type": S, "cle": {"type": "string", "enum": CLES + [""]}}))})
-    return _obj({"ouverture": _liste(S), "chapitres": _obj({cid: chapitre(cid) for cid in ORDRE})})
+    """Schéma strict du bloc « guide » : une liste de chapitres décrite UNE fois (le nom du chapitre est un champ).
+    Pas d'« enum » : les listes fermées sont dans le message (champ « listes ») et revérifiées par nettoyer_guide ;
+    recopiées dans le schéma, elles rendaient la grammaire trop grosse pour l'API (vrai essai du 27/11)."""
+    choix = _obj({"id": S, "nom": S, "pourquoi": S})
+    chapitre = _obj({"chapitre": S, "afficher": {"type": "boolean"}, "vu": _liste(_obj({"texte": S, "etiquette": S})), "sens": _liste(S),
+                     "objectif": S, "premier": choix, "sur": choix, "audacieux": choix, "eviter": S,
+                     "routine": _liste(_obj({"geste": S, "detail": S, "picto": S})), "produits": _liste(_obj({"type": S, "cle": S}))})
+    return _obj({"ouverture": _liste(S), "chapitres": _liste(chapitre)})
 
 
-CONSIGNE = """
+CONSIGNE = f"""
 4. Le bloc "guide" : le rendez-vous visagiste que la personne lira écran par écran, AU TUTOIEMENT (« je vois », « ton visage », « je te conseille »),
    comme un visagiste qui lui parle en face : phrases courtes, chaleureuses, un collégien doit comprendre, tout mot du métier expliqué.
    - "ouverture" : 3 phrases au plus, dans cet ordre : la forme de son visage, ses cheveux, sa peau et son sous-ton.
-   - "chapitres" : cheveux, peau, barbe, regard (yeux et sourcils), lunettes, couleurs (des vêtements). Pour chacun :
+   - "chapitres" : une liste, un objet par chapitre, avec "chapitre" = cheveux, peau, barbe, regard (yeux et sourcils), lunettes ou
+     couleurs (des vêtements), dans cet ordre. Pour chacun :
      "afficher" : false si la description ne donne pas assez de matière fiable ; pour "barbe", false si aucune barbe n'est visible
        et que la personne n'a pas choisi l'objectif « barbe » (tu ne devines jamais le genre).
      "vu" : 2 à 4 constats tirés de la description, rien d'inventé ; "etiquette" : 1 à 3 mots (ex. « Type 4A », « Dense »), ou "".
      "sens" : 1 à 3 phrases : ce que ça veut dire pour elle. "objectif" : une phrase.
      "premier", "sur", "audacieux" : mon premier choix, le choix sûr, le choix audacieux, trois propositions différentes, chacune avec
        son "pourquoi" (une phrase qui part de ce qu'on voit). Cheveux : coupes de la liste, compatibles avec sa texture (champ "textures") ;
-       barbe : styles de la liste ; lunettes : montures de la liste ; couleurs : couleurs de vêtements de la liste ; peau et regard : "nom" court,
-       tiré des fiches choisies. "eviter" : une chose à éviter, avec la raison.
-     "routine" : 3 ou 4 gestes, chacun avec sa fréquence dans "detail" et un "picto" de la liste (ou "").
-     "produits" : 1 à 4 types de produits (jamais de marque) ; "cle" : le type correspondant dans la liste fournie, ou "".
+       barbe : styles de la liste ; lunettes : montures de la liste ; couleurs : couleurs de vêtements de la liste — dans "id", recopie
+       EXACTEMENT un identifiant du champ « listes » ("nom" : "") ; peau et regard : "nom" court, tiré des fiches choisies ("id" : "").
+       "eviter" : une chose à éviter, avec la raison.
+     "routine" : 3 ou 4 gestes, chacun avec sa fréquence dans "detail" et un "picto" parmi : {", ".join(PICTOS)} (ou "").
+     "produits" : 1 à 4 types de produits (jamais de marque) ; "cle" parmi : {", ".join(CLES)} (ou "").
    Un savoir-faire ou une tendance n'est jamais présenté comme un fait prouvé. Aucune note de beauté, aucun défaut, aucun diagnostic.
 """
 
@@ -102,6 +102,8 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict 
 
 def nettoyer_guide(b, cat: dict, description: dict, reponses: dict | None) -> dict | None:
     """Revérifie le bloc « guide » : listes fermées, bornes, barbe seulement si visible ou demandée. None si rien d'affichable."""
+    if isinstance(b, dict) and isinstance(b.get("chapitres"), list):      # forme du schéma : liste d'objets portant leur nom
+        b = {**b, "chapitres": {c.get("chapitre"): c for c in b["chapitres"] if isinstance(c, dict) and isinstance(c.get("chapitre"), str)}}
     if not isinstance(b, dict) or not isinstance(b.get("chapitres"), dict) or not isinstance(b.get("ouverture"), list):
         return None
     phrases = [p for p in (_texte(x, 30) for x in b["ouverture"][:3]) if p]
