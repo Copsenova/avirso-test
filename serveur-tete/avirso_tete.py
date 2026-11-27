@@ -27,6 +27,8 @@ MAX_PHOTOS, MAX_OCTETS = 5, 12 * 1024 * 1024
 # Les agents (analyse par modèle de vision) ne s'activent que si la clé est rangée dans le secret Modal « anthropic »
 # (variable ANTHROPIC_API_KEY) et que l'on déploie avec AVEC_ANALYSE=1. Sans cela, /analyses répond « pas encore activée ».
 AVEC_ANALYSE = os.environ.get("AVEC_ANALYSE") == "1"
+# TETE_ANCIENNE=1 au déploiement : l'ancienne « tête qui tourne » au lieu du portrait studio en relief (27/11)
+TETE_ANCIENNE = os.environ.get("TETE_ANCIENNE") == "1"
 # Nom du secret Modal : « anthropic » par défaut ; SECRET_ANTHROPIC=<nom> au déploiement si le secret porte un autre nom.
 NOM_SECRET = os.environ.get("SECRET_ANTHROPIC", "anthropic")
 SECRETS = [modal.Secret.from_name(NOM_SECRET, required_keys=["ANTHROPIC_API_KEY"])] if AVEC_ANALYSE else []
@@ -64,7 +66,6 @@ app = modal.App("avirso-tete", image=image)
 # Une seule machine : retouche studio identité gardée (Qwen-Image-Edit-2511 + accélération 4 étapes fusionnée, Apache 2.0), détourage
 # (BiRefNet, MIT), profondeur (Depth Anything V2 Small, Apache 2.0), puis la suite d'images qui pivote (relief_images.py).
 # Démarrage depuis un instantané mémoire GPU ; la machine s'arrête 15 s après le dernier client. TETE_ANCIENNE=1 au déploiement : ancienne tête.
-TETE_ANCIENNE = os.environ.get("TETE_ANCIENNE") == "1"
 image_relief = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("torch==2.7.1", "torchvision==0.22.1", "transformers>=4.57", "accelerate", "safetensors", "sentencepiece", "peft>=0.17",
