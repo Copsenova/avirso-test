@@ -46,6 +46,36 @@ def schema_chapitre(cat: dict) -> dict:
 SCHEMA_OUVERTURE = _obj({"ouverture": _liste(S)})
 
 
+# Fiches utiles à chaque chapitre (sujets de savoir.json) : chaque appel du guide ne reçoit que les siennes.
+SUJETS = {
+    "cheveux": {"Outils selon le type de cheveux", "Cheveux crépus", "Coiffures protectrices", "Cheveux bouclés et crépus", "Coiffants homme",
+                "Définir ses boucles", "Types de cheveux", "Coupe et forme du visage", "Dégradés (fade et taper)", "Locks", "Contours et line-up",
+                "Cheveux et barbe blancs", "Couleur naturelle des cheveux", "Niveaux de couleur (coloration)", "Couleur de cheveux selon le sous-ton"},
+    "peau": {"Actifs anti-acné", "Peaux foncées et noires", "Rétinoïdes et rétinol", "Maquillage des peaux foncées", "Carnations (échelles)", "Vitiligo",
+             "Peau grasse", "Sous-tons et teint", "Écrans solaires", "Niacinamide", "Rougeurs et chaleur", "Vitamine C", "Acides exfoliants (AHA)",
+             "Hydratation : les trois familles", "Albinisme", "Types de peau", "Peau sèche", "Taches de rousseur", "Bronzage et coups de soleil",
+             "Combiner les actifs", "Poils incarnés"},
+    "barbe": {"Poils incarnés", "Entretien de la barbe", "Contours et line-up", "Rasage", "Cheveux et barbe blancs", "Barbe selon la forme du visage",
+              "Outils de la barbe"},
+    "regard": {"Sourcils", "Faux cils", "Couleur des yeux", "Couleur des sourcils"},
+    "lunettes": {"Taille de monture", "Forme de monture"},
+    "couleurs": {"Couleurs des vêtements", "Sous-tons et teint", "Carnations (échelles)"},
+}
+LISTE_DU_CHAPITRE = {"cheveux": "coupes", "barbe": "barbes", "lunettes": "montures", "couleurs": "couleurs_vetements"}
+
+
+def entree_du_chapitre(entree: dict, cid: str) -> dict:
+    """Données d'un appel de chapitre : la description et les réponses, les fiches de son sujet (un sujet inconnu va partout
+    plutôt que nulle part) et sa seule liste fermée (vrai essai du 27/11 : 373 000 jetons d'entrée en envoyant tout à chaque appel)."""
+    connus = set().union(*SUJETS.values())
+    cat = [f for f in entree.get("catalogue", []) if f.get("sujet") in SUJETS[cid] or f.get("sujet") not in connus]
+    out = {"description": entree.get("description"), "reponses": entree.get("reponses", {}), "catalogue": cat}
+    nom = LISTE_DU_CHAPITRE.get(cid)
+    if nom and nom in (entree.get("listes") or {}):
+        out["listes"] = {nom: entree["listes"][nom]}
+    return out
+
+
 def barbe_attendue(description: dict, reponses: dict | None) -> bool:
     """Chapitre barbe : seulement si une barbe se voit ou si la personne a choisi l'objectif « barbe »."""
     barbe = (description.get("barbe") or {}) if isinstance(description, dict) else {}

@@ -105,7 +105,9 @@ class _ClientVisagiste(_Client):
         if system == agents.CONSIGNE_ANALYSTE:
             return _Rep('{"fiabilite": "bonne", "limites": [], "cheveux": {"texture": "crépus"}}')
         import json
-        self.demande = messages[0]["content"][0]["text"]
+        s = k.get("extra_body", {}).get("output_config", {}).get("format", {}).get("schema")
+        if s and "visagiste" in s["properties"]:
+            self.demande = messages[0]["content"][0]["text"]      # appels parallèles : on garde celui du conseiller
         c = conseil(visagiste={"coupe": {"choix": "afro_court", "pourquoi": "Vos boucles serrées.", "autres": [], "fiches": [1]},
                                "outils": [{"id": "eponge-twists", "pourquoi": "Pour définir."}]})
         return _Rep(json.dumps(c))
@@ -241,21 +243,34 @@ def test_temps_par_etape():
     assert set(r["temps"]) == {"analyste", "conseiller", "guide"} and all(isinstance(v, float) for v in r["temps"].values())
 
 
-def test_cache_partage_entre_les_appels():
-    # 426 000 jetons d'entrée par analyse (vrai essai du 27/11) : les fiches étaient renvoyées à chaque appel sans cache
-    import test_chapitres
-    c = _ClientGuide()
-    agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
-    hors_analyste = [(s, m) for (s, _, _), m in zip(c.appels, c.messages_recus) if s != agents.CONSIGNE_ANALYSTE]
-    assert len({s for s, _ in hors_analyste}) == 1                         # même consigne système : le préfixe est commun
-    premiers = {m[0]["content"][0]["text"] for _, m in hors_analyste}
-    assert len(premiers) == 1                                               # même message de données en tête
-    assert all(m[0]["content"][0].get("cache_control") == {"type": "ephemeral"} for _, m in hors_analyste)
+def _donnees(messages):
+    import json
+    return json.loads(messages[0]["content"][0]["text"])
 
 
-def test_ouverture_lancee_avant_les_chapitres():
+def test_chaque_chapitre_recoit_ses_fiches_et_sa_liste():
+    # vrai essai du 27/11 : 373 000 jetons d'entrée, les 169 fiches et toutes les listes étant renvoyées à chaque appel
     import test_chapitres
+    cat = [{"id": 1, "sujet": "Forme de monture", "titre": "t", "texte": "x", "niveau": "A"},
+           {"id": 2, "sujet": "Écrans solaires", "titre": "t", "texte": "x", "niveau": "A"},
+           {"id": 3, "sujet": "Sujet inconnu", "titre": "t", "texte": "x", "niveau": "A"}]
     c = _ClientGuide()
-    agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
-    roles = ["ouverture" if s and "ouverture" in s["properties"] else "chapitre" if s and "chapitre" in s["properties"] else "autre" for _, s, _ in c.appels]
-    assert roles.index("ouverture") < min(i for i, r in enumerate(roles) if r == "chapitre")
+    agents.analyser(c, [], cat, None, styles=test_chapitres.CAT)
+    par_chapitre = {}
+    for (s, schema, _), m in zip(c.appels, c.messages_recus):
+        if schema and "chapitre" in schema["properties"]:
+            import re
+            cid = re.search(r"chapitre « (\w+) »", consigne_de(m)).group(1)
+            par_chapitre[cid] = _donnees(m)
+    lun, peau = par_chapitre["lunettes"], par_chapitre["peau"]
+    assert {f["id"] for f in lun["catalogue"]} == {1, 3}          # un sujet inconnu va partout plutôt que nulle part
+    assert {f["id"] for f in peau["catalogue"]} == {2, 3}
+    assert set(lun["listes"]) == {"montures"} and "listes" not in peau
+    assert set(par_chapitre["cheveux"]["listes"]) == {"coupes"}
+
+
+def test_tous_les_sujets_de_la_bibliotheque_ont_un_chapitre():
+    import json, os, chapitres
+    s = json.load(open(os.path.join(os.path.dirname(__file__), "savoir.json"), encoding="utf-8"))
+    connus = set().union(*chapitres.SUJETS.values())
+    assert {f["sujet"] for f in s} <= connus

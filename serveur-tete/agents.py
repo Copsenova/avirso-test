@@ -198,9 +198,6 @@ CONSIGNE_VISAGISTE = """
    Chaque "pourquoi" : une phrase (30 mots au plus) qui part de ce qu'on voit sur cette personne. "fiches" : les numéros qui fondent le choix.
 """
 
-CONSIGNE_CONSEIL_SEUL = """
-Dans CETTE réponse, rends uniquement les blocs 1 à 3 (accroche, sujets, suite, sélection, visagiste) ; le bloc "guide" est rédigé à part.
-"""
 CONSIGNE_OUVERTURE_SEULE = """
 Dans CETTE réponse, rends uniquement "ouverture" du bloc "guide" (le reste est rédigé à part, avec les mêmes données).
 """
@@ -261,24 +258,19 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
         # Le guide part en appels parallèles (ouverture, puis un appel par chapitre), en même temps que le conseiller :
         # les trois blocs dans un seul schéma dépassent la taille de grammaire acceptée par l'API, et le guide en un seul
         # appel prenait 188 s (vrai essai du 27/11). Un chapitre en échec n'écarte que lui.
-        # Coût : tous les appels partagent la même consigne système et le même message de données, mis en cache ; la consigne
-        # propre à chaque appel vient après. L'ouverture (réponse courte) part d'abord et remplit le cache pour les autres
-        # (426 000 jetons d'entrée sans cache au vrai essai du 27/11).
+        # Coût : chaque chapitre ne reçoit que les fiches de son sujet et sa liste ; l'ouverture, la seule description.
         from concurrent.futures import ThreadPoolExecutor
-        systeme = consigne + chapitres.CONSIGNE
-        donnees = {"type": "text", "text": json.dumps(entree, ensure_ascii=False), "cache_control": {"type": "ephemeral"}}
-        avec = lambda note: [donnees, {"type": "text", "text": note.strip()}]
+        systeme_guide = consigne + chapitres.CONSIGNE
+        texte = [{"type": "text", "text": json.dumps(entree, ensure_ascii=False)}]
+        donnees = lambda e, note: [{"type": "text", "text": json.dumps(e, ensure_ascii=False)}, {"type": "text", "text": note.strip()}]
         a_rediger = [c for c in chapitres.ORDRE if c != "barbe" or chapitres.barbe_attendue(description, reponses)]
         t1 = time.time()
-        with ThreadPoolExecutor(1 + len(a_rediger)) as pool:
-            f_ouv = pool.submit(_appeler, client, systeme, avec(CONSIGNE_OUVERTURE_SEULE), 1500, chapitres.SCHEMA_OUVERTURE, "ouverture", jetons)
-            try:
-                ouverture = f_ouv.result()
-            except Exception as e:
-                ouverture = e
-            f_conseil = pool.submit(_appeler, client, systeme, avec(CONSIGNE_CONSEIL_SEUL), budget, schema, "conseiller", jetons)
-            f_chap = {c: pool.submit(_appeler, client, systeme, avec(CONSIGNE_CHAPITRE_SEUL.format(c=c)), 4000,
-                                     chapitres.schema_chapitre(styles), f"chapitre {c}", jetons) for c in a_rediger}
+        with ThreadPoolExecutor(2 + len(a_rediger)) as pool:
+            f_conseil = pool.submit(_appeler, client, consigne, texte, budget, schema, "conseiller", jetons)
+            f_ouv = pool.submit(_appeler, client, systeme_guide, donnees({"description": description, "reponses": reponses or {}}, CONSIGNE_OUVERTURE_SEULE),
+                                1500, chapitres.SCHEMA_OUVERTURE, "ouverture", jetons)
+            f_chap = {c: pool.submit(_appeler, client, systeme_guide, donnees(chapitres.entree_du_chapitre(entree, c), CONSIGNE_CHAPITRE_SEUL.format(c=c)),
+                                     4000, chapitres.schema_chapitre(styles), f"chapitre {c}", jetons) for c in a_rediger}
             brut = f_conseil.result()
             temps["conseiller"] = round(time.time() - t1, 1)
             echecs, liste = {}, []
@@ -289,9 +281,7 @@ def analyser(client, photos: list, catalogue: list, reponses: dict | None = None
                 except Exception as e:
                     echecs[c] = f"{type(e).__name__}: {str(e)[:120]}"
             try:
-                if isinstance(ouverture, Exception):
-                    raise ouverture
-                brut_guide = {"ouverture": ouverture.get("ouverture"), "chapitres": liste}
+                brut_guide = {"ouverture": f_ouv.result().get("ouverture"), "chapitres": liste}
             except Exception as e:      # sans ouverture, pas de guide ; l'analyse reste livrée ; la cause est gardée (sans donnée personnelle)
                 brut_guide, erreur_guide = None, f"{type(e).__name__}: {str(e)[:160]}"
                 print(f"guide en échec : {erreur_guide}", flush=True)
