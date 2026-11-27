@@ -274,3 +274,12 @@ def test_tous_les_sujets_de_la_bibliotheque_ont_un_chapitre():
     s = json.load(open(os.path.join(os.path.dirname(__file__), "savoir.json"), encoding="utf-8"))
     connus = set().union(*chapitres.SUJETS.values())
     assert {f["sujet"] for f in s} <= connus
+
+
+def test_appels_du_guide_rappellent_le_tutoiement():
+    # vrai essai du 27/11 : « beaucoup de coupes vous vont » dans l'ouverture (la consigne du conseiller est au vouvoiement)
+    import test_chapitres
+    c = _ClientGuide()
+    agents.analyser(c, [], CAT_COMPLET, None, styles=test_chapitres.CAT)
+    notes = [consigne_de(m) for (_, s, _), m in zip(c.appels, c.messages_recus) if s and ({"chapitre", "ouverture"} & set(s["properties"]))]
+    assert notes and all("jamais « vous »" in n for n in notes)

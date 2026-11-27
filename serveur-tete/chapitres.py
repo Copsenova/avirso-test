@@ -87,7 +87,7 @@ CONSIGNE = f"""
 4. Le bloc "guide" : le rendez-vous visagiste que la personne lira écran par écran, AU TUTOIEMENT (« je vois », « ton visage », « je te conseille »),
    comme un visagiste qui lui parle en face : phrases courtes, chaleureuses, un collégien doit comprendre, tout mot du métier expliqué.
    Limites strictes (au-delà, la phrase est coupée à l'affichage) : ouverture, "sens", "pourquoi" et "eviter" : 30 mots au plus par phrase ;
-   "vu" : 25 mots au plus ; "objectif" et "detail" : 20 mots au plus.
+   "vu" : 25 mots au plus ; "objectif" et "detail" : 20 mots au plus ; "type" d'un produit : 8 mots au plus ; "geste" : 6 mots au plus.
    - "ouverture" : 3 phrases au plus, dans cet ordre : la forme de son visage, ses cheveux, sa peau et son sous-ton.
    - "chapitres" : une liste, un objet par chapitre, avec "chapitre" = cheveux, peau, barbe, regard (yeux et sourcils), lunettes ou
      couleurs (des vêtements), dans cet ordre. Pour chacun :

@@ -173,7 +173,7 @@ def test_identifiant_inconnu_reste_refuse():
 
 def test_consigne_donne_les_limites_de_mots():
     # vrai essai du 27/11 : des phrases trop longues finissaient coupées par « … » au nettoyage
-    for limite in ("30 mots", "25 mots", "20 mots"):
+    for limite in ("30 mots", "25 mots", "20 mots", "8 mots", "6 mots"):
         assert limite in chapitres.CONSIGNE
 
 

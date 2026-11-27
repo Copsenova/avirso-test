@@ -200,9 +200,11 @@ CONSIGNE_VISAGISTE = """
 
 CONSIGNE_OUVERTURE_SEULE = """
 Dans CETTE réponse, rends uniquement "ouverture" du bloc "guide" (le reste est rédigé à part, avec les mêmes données).
+Tout ce texte est AU TUTOIEMENT (« tu », « ton », « ta », « tes ») : jamais « vous », « votre » ni « vos », même si d'autres consignes vouvoient.
 """
 CONSIGNE_CHAPITRE_SEUL = """
 Dans CETTE réponse, rends uniquement le chapitre « {c} » du bloc "guide", dans "chapitre" (le reste est rédigé à part, avec les mêmes données).
+Tout ce texte est AU TUTOIEMENT (« tu », « ton », « ta », « tes ») : jamais « vous », « votre » ni « vos », même si d'autres consignes vouvoient.
 """
 
 
