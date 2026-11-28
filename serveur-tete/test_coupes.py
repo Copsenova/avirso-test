@@ -33,8 +33,11 @@ def test_barbe_et_coupe():
     assert "beard" not in GARDE.split(";")[0] or True
 
 
-def test_sans_barbe_demandee_la_barbe_reste():
-    assert "keep the beard unchanged" in consigne("afro", None, "face")
+def test_sans_barbe_demandee_la_pilosite_reste_telle_quelle():
+    # « keep the beard unchanged » faisait inventer une barbe sur un visage glabre (essai démo du 28/11)
+    t = consigne("afro", None, "face")
+    assert "beard unchanged" not in t
+    assert "do not add or remove any facial hair" in t
 
 
 def test_rien_demande():

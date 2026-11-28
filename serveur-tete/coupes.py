@@ -49,7 +49,7 @@ def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None
         cb = f", beard color {COULEURS_BARBE[couleur_barbe]}" if couleur_barbe in COULEURS_BARBE else ""
         changer.append(f"change the facial hair to {style}{tx}{cb}")
     else:
-        garder.append("keep the beard unchanged")
+        garder.append("keep the facial hair exactly as it is, do not add or remove any facial hair")
     if lunettes:
         changer.append(f"add a pair of {LUNETTES[lunettes]} eyeglasses with thin frames and clear lenses, resting naturally on the nose")
     angle = "keep the same three-quarter head angle and pose as the photo" if vue == "trois_quarts" else "keep the same head pose"
