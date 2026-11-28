@@ -3,6 +3,7 @@
 Le catalogue vient du deuxième cerveau (AVIRSO-cerveau, `python3 construire.py catalogue` → catalogue.json) :
 coupes du monde entier, couleurs et teintures, barbes (styles, textures, couleurs). Aucune image de référence prise sur le web.
 """
+import re
 import json, os
 
 _K = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalogue.json"), encoding="utf-8"))
@@ -22,6 +23,10 @@ GARDE = ("keep the face, skin, eyebrows, lighting and background unchanged; "
          "same person, same expression, photorealistic, natural texture")
 
 
+# une coupe qui nomme sa texture (afro, boucles, lisse…) la garde ; les autres se dessinent sur la texture de la personne (vraies photos du 28/11)
+TEXTURE_DANS_LA_COUPE = re.compile(r"straight|curl|coil|afro|twist|braid|wave|lock|dread|slick|glossy|shav|bald|buzz|clipped", re.I)
+
+
 def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None = None,
              texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None, glabre: bool = False) -> str:
     """Consigne anglaise. vue : "face" ou "trois_quarts" (chaque photo est retouchée seule, sans image de référence)."""
@@ -38,7 +43,8 @@ def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None
     changer, garder = [], [GARDE]
     teinte = COULEURS.get(couleur) if couleur else None
     if coupe:
-        changer.append(f"change the hairstyle to {COUPES[coupe]}" + (f", hair color {teinte}" if teinte else ""))
+        texture = "" if TEXTURE_DANS_LA_COUPE.search(COUPES[coupe]) else ", keeping the person's natural hair texture (same curl or wave pattern)"
+        changer.append(f"change the hairstyle to {COUPES[coupe]}{texture}" + (f", hair color {teinte}" if teinte else ""))
     elif teinte:
         changer.append(f"keep the same haircut but dye the hair {teinte}")
     else:

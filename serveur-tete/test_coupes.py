@@ -83,3 +83,13 @@ def test_visage_glabre_reste_rase():
 def test_glabre_ignore_si_une_barbe_est_demandee():
     t = consigne(None, None, "face", barbe="bouc", glabre=True)
     assert "clean-shaven" not in t
+
+
+def test_la_coupe_garde_la_texture_naturelle():
+    # 28/11, vraies photos : un mi-long sur cheveux bouclés sortait lisse et plaqué ; la coupe doit se voir sur SES cheveux
+    assert "natural hair texture" in consigne("mi_long_degrade", None, "face")
+
+
+def test_une_coupe_qui_definit_sa_texture_n_est_pas_contredite():
+    assert "natural hair texture" not in consigne("afro", None, "face")
+    assert "natural hair texture" not in consigne("court_lisse", None, "face")
