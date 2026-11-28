@@ -44,6 +44,7 @@ def test_guide_complet():
     assert g["profil"] == {"barbe": True}
     lun = next(c for c in g["chapitres"] if c["id"] == "lunettes")
     assert lun["conseils"]["premier"]["nom"] == "Wayfarer" and lun["titre"] == "Lunettes" and lun["zones"] == ["eyes", "nose"]
+    assert all(lun["conseils"][r]["essai"] == "lunettes" for r in ("premier", "sur", "audacieux"))     # 28/11 : les montures s'essaient aussi
     ch = g["chapitres"][0]
     assert ch["conseils"]["premier"]["essai"] == "coupe" and ch["conseils"]["premier"]["id"] == "carre_long"
     assert ch["picto"] == "cheveux" and ch["conseils"]["eviter"]

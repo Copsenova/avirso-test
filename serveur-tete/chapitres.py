@@ -61,6 +61,7 @@ SUJETS = {
     "lunettes": {"Taille de monture", "Forme de monture"},
     "couleurs": {"Couleurs des vêtements", "Sous-tons et teint", "Carnations (échelles)"},
 }
+ESSAI_DU_CHAPITRE = {"cheveux": "coupe", "lunettes": "lunettes"}     # choix que le serveur sait essayer sur la photo (coupes.consigne)
 LISTE_DU_CHAPITRE = {"cheveux": "coupes", "barbe": "barbes", "lunettes": "montures", "couleurs": "couleurs_vetements"}
 
 
@@ -150,7 +151,7 @@ def _chapitre(cid: str, c, listes: dict, coupes: dict, tex: str | None) -> dict:
                 raise _Ecarte(f"{rang} : identifiant hors liste ({str(x.get('id'))[:30]!r}, nom {str(x.get('nom'))[:30]!r})")
             if cid == "cheveux" and tex and coupes[i].get("textures") and tex not in coupes[i]["textures"]:
                 raise _Ecarte(f"{rang} : coupe incompatible avec la texture")
-            conseils[rang] = {"id": i, "nom": listes[cid][i], "pourquoi": pourquoi, **({"essai": "coupe"} if cid == "cheveux" else {})}
+            conseils[rang] = {"id": i, "nom": listes[cid][i], "pourquoi": pourquoi, **({"essai": ESSAI_DU_CHAPITRE[cid]} if cid in ESSAI_DU_CHAPITRE else {})}
         else:
             if not (nom := _texte(x.get("nom"), 8)):
                 raise _Ecarte(f"{rang} : nom manquant")
