@@ -72,3 +72,14 @@ def test_lunettes_seules_suffisent_et_inconnues_refusees():
     import pytest
     with pytest.raises(ValueError):
         c.consigne(None, None, "face", lunettes="monocle")
+
+
+def test_visage_glabre_reste_rase():
+    # 28/11, 2e essai démo : même sans « keep the beard », le modèle ajoutait une barbe au mannequin glabre
+    t = consigne("carre_long", None, "trois_quarts", glabre=True)
+    assert "clean-shaven" in t and "no stubble" in t
+
+
+def test_glabre_ignore_si_une_barbe_est_demandee():
+    t = consigne(None, None, "face", barbe="bouc", glabre=True)
+    assert "clean-shaven" not in t

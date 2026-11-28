@@ -130,12 +130,12 @@ class Retoucheur:
 
     @modal.method()
     def retoucher(self, photos: list[bytes], coupe: str | None = None, couleur: str | None = None, barbe: str | None = None,
-                  texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None) -> dict:
+                  texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None, glabre: bool = False) -> dict:
         """photos : [face, trois-quarts...]. Renvoie la face retouchée puis les autres vues (WebP base64)."""
-        return _retoucher(self._editer, photos, coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes)
+        return _retoucher(self._editer, photos, coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes, glabre)
 
 
-def _retoucher(editer, photos: list[bytes], coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes=None) -> dict:
+def _retoucher(editer, photos: list[bytes], coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes=None, glabre=False) -> dict:
     """Essai d'un style sur les photos de la personne (face puis trois-quarts, chacune retouchée seule)."""
     import base64, io, sys, time
     from PIL import Image, ImageOps
@@ -157,10 +157,10 @@ def _retoucher(editer, photos: list[bytes], coupe, couleur, barbe, texture_barbe
         def webp(im):
             f = io.BytesIO(); im.save(f, "WEBP", quality=92); return base64.b64encode(f.getvalue()).decode()
         ims = [ouvrir(b) for b in photos[:3]]
-        face = editer([ims[0]], consigne(coupe, couleur, "face", barbe, texture_barbe, couleur_barbe, lunettes))
+        face = editer([ims[0]], consigne(coupe, couleur, "face", barbe, texture_barbe, couleur_barbe, lunettes, glabre))
         t_face = time.time() - t0
         # chaque trois-quarts est retouché seul (avec la face en référence, le modèle remettait la tête de face)
-        vues = [editer([im], consigne(coupe, couleur, "trois_quarts", barbe, texture_barbe, couleur_barbe, lunettes)) for im in ims[1:]]
+        vues = [editer([im], consigne(coupe, couleur, "trois_quarts", barbe, texture_barbe, couleur_barbe, lunettes, glabre)) for im in ims[1:]]
         return {"ok": True, "face": webp(face), "vues": [webp(v) for v in vues], "secondes": round(time.time() - t0, 1), "secondes_face": round(t_face, 1)}
     except ValueError as e:
         return {"ok": False, "erreur": str(e)}
@@ -191,9 +191,9 @@ class PortraitRelief:
 
     @modal.method()
     def retoucher(self, photos: list[bytes], coupe: str | None = None, couleur: str | None = None, barbe: str | None = None,
-                  texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None) -> dict:
+                  texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None, glabre: bool = False) -> dict:
         """Essai d'un style proposé par l'agent : même modèle déjà chargé que le portrait (démarrage rapide par instantané), 8 pas."""
-        return _retoucher(self._editer, photos, coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes)
+        return _retoucher(self._editer, photos, coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes, glabre)
 
     @modal.method()
     def tournee(self, photos: list[bytes], pas: int = 8) -> dict:
@@ -353,7 +353,7 @@ def site():
 
     @web.post("/coupes")
     async def creer_coupe(photos: list[UploadFile] = File(...), coupe: str = Form(""), couleur: str = Form(""), barbe: str = Form(""),
-                          texture_barbe: str = Form(""), couleur_barbe: str = Form(""), lunettes: str = Form("")):
+                          texture_barbe: str = Form(""), couleur_barbe: str = Form(""), lunettes: str = Form(""), glabre: str = Form("")):
         import sys
         sys.path.insert(0, "/root")
         from coupes import valider_demande, BARBES, TEXTURES_BARBE, COULEURS_BARBE, LUNETTES
@@ -375,7 +375,7 @@ def site():
             if len(c) > MAX_OCTETS:
                 raise HTTPException(413, "photo trop lourde (12 Mo au plus)")
             contenus.append(c)
-        appel = await PortraitRelief().retoucher.spawn.aio(contenus, coupe, teinte, barbe, texture_barbe, couleur_barbe, lunettes)      # serveur rapide (instantané)
+        appel = await PortraitRelief().retoucher.spawn.aio(contenus, coupe, teinte, barbe, texture_barbe, couleur_barbe, lunettes, glabre == "1")      # serveur rapide (instantané)
         return {"id": appel.object_id}
 
     @web.get("/coupes/{ident}")

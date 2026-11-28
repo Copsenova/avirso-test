@@ -23,7 +23,7 @@ GARDE = ("keep the face, skin, eyebrows, lighting and background unchanged; "
 
 
 def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None = None,
-             texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None) -> str:
+             texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None, glabre: bool = False) -> str:
     """Consigne anglaise. vue : "face" ou "trois_quarts" (chaque photo est retouchée seule, sans image de référence)."""
     if coupe is not None and coupe not in COUPES:
         raise ValueError(f"coupe inconnue : {coupe}")
@@ -48,6 +48,8 @@ def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None
         tx = f", {TEXTURES_BARBE[texture_barbe]}" if texture_barbe in TEXTURES_BARBE else ""
         cb = f", beard color {COULEURS_BARBE[couleur_barbe]}" if couleur_barbe in COULEURS_BARBE else ""
         changer.append(f"change the facial hair to {style}{tx}{cb}")
+    elif glabre:      # visage sans barbe : le dire, sinon le modèle en ajoute une (essais démo du 28/11)
+        garder.append("the person is clean-shaven: keep a smooth clean-shaven face, no beard, no moustache, no stubble")
     else:
         garder.append("keep the facial hair exactly as it is, do not add or remove any facial hair")
     if lunettes:
