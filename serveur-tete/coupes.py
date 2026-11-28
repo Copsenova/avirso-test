@@ -12,18 +12,26 @@ BARBES: dict[str, str] = {e["id"]: e["description"] for e in _K["barbes"]}
 TEXTURES_BARBE: dict[str, str] = {e["id"]: e["description"] for e in _K["textures_barbe"]}
 COULEURS_BARBE: dict[str, str] = {e["id"]: e["description"] for e in _K["couleurs_barbe"]}
 
+# montures proposées par le visagiste (visagiste.MONTURES) : description pour le modèle d'image
+LUNETTES: dict[str, str] = {
+    "rectangulaire": "rectangular", "carree": "square", "ronde": "round", "ovale": "oval", "aviateur": "aviator-style",
+    "browline": "browline (bold upper rim, thin lower rim)", "cat-eye": "cat-eye", "wayfarer": "wayfarer-style", "geometrique": "geometric hexagonal",
+}
+
 GARDE = ("keep the face, skin, eyebrows, lighting and background unchanged; "
          "same person, same expression, photorealistic, natural texture")
 
 
 def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None = None,
-             texture_barbe: str | None = None, couleur_barbe: str | None = None) -> str:
+             texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None) -> str:
     """Consigne anglaise. vue : "face" ou "trois_quarts" (chaque photo est retouchée seule, sans image de référence)."""
     if coupe is not None and coupe not in COUPES:
         raise ValueError(f"coupe inconnue : {coupe}")
     if barbe is not None and barbe not in BARBES:
         raise ValueError(f"barbe inconnue : {barbe}")
-    if coupe is None and barbe is None and couleur is None and couleur_barbe is None and texture_barbe is None:
+    if lunettes is not None and lunettes not in LUNETTES:
+        raise ValueError(f"monture inconnue : {lunettes}")
+    if coupe is None and barbe is None and couleur is None and couleur_barbe is None and texture_barbe is None and lunettes is None:
         raise ValueError("rien à changer")
     if vue not in ("face", "trois_quarts"):
         raise ValueError(f"vue inconnue : {vue}")
@@ -42,6 +50,8 @@ def consigne(coupe: str | None, couleur: str | None, vue: str, barbe: str | None
         changer.append(f"change the facial hair to {style}{tx}{cb}")
     else:
         garder.append("keep the beard unchanged")
+    if lunettes:
+        changer.append(f"add a pair of {LUNETTES[lunettes]} eyeglasses with thin frames and clear lenses, resting naturally on the nose")
     angle = "keep the same three-quarter head angle and pose as the photo" if vue == "trois_quarts" else "keep the same head pose"
     texte = " and ".join(changer)
     return f"{texte[0].upper()}{texte[1:]}. {'; '.join(garder)}; {angle}."

@@ -72,6 +72,8 @@ image_relief = (
                  "timm", "kornia", "einops", "pillow", "numpy", "diffusers>=0.36", "opencv-python-headless==4.10.0.84")
     .env({"HF_HOME": "/poids/hf"})
     .add_local_file("serveur-tete/relief_images.py", "/root/relief_images.py")
+    .add_local_file("serveur-tete/coupes.py", "/root/coupes.py")      # essai des styles proposés, sur le même modèle chargé
+    .add_local_file("serveur-tete/catalogue.json", "/root/catalogue.json")
 )
 CONSIGNE_RELIEF = (
     "Professional cinematic studio portrait photograph of the person in the first image. Keep his or her face exactly identical to the reference "
@@ -128,37 +130,42 @@ class Retoucheur:
 
     @modal.method()
     def retoucher(self, photos: list[bytes], coupe: str | None = None, couleur: str | None = None, barbe: str | None = None,
-                  texture_barbe: str | None = None, couleur_barbe: str | None = None) -> dict:
+                  texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None) -> dict:
         """photos : [face, trois-quarts...]. Renvoie la face retouchée puis les autres vues (WebP base64)."""
-        import base64, io, sys, time
-        from PIL import Image, ImageOps
-        sys.path.insert(0, "/root")
-        from coupes import consigne
-        if not photos:
-            return {"ok": True, "reveil": True}
-        t0 = time.time()
-        try:
-            def ouvrir(b):
-                try:
-                    from pillow_heif import register_heif_opener
-                    register_heif_opener()
-                except Exception:
-                    pass
-                im = ImageOps.exif_transpose(Image.open(io.BytesIO(b))).convert("RGB")
-                im.thumbnail((1024, 1024))
-                return im
-            def webp(im):
-                f = io.BytesIO(); im.save(f, "WEBP", quality=92); return base64.b64encode(f.getvalue()).decode()
-            ims = [ouvrir(b) for b in photos[:3]]
-            face = self._editer([ims[0]], consigne(coupe, couleur, "face", barbe, texture_barbe, couleur_barbe))
-            t_face = time.time() - t0
-            # chaque trois-quarts est retouché seul (avec la face en référence, le modèle remettait la tête de face)
-            vues = [self._editer([im], consigne(coupe, couleur, "trois_quarts", barbe, texture_barbe, couleur_barbe)) for im in ims[1:]]
-            return {"ok": True, "face": webp(face), "vues": [webp(v) for v in vues], "secondes": round(time.time() - t0, 1), "secondes_face": round(t_face, 1)}
-        except ValueError as e:
-            return {"ok": False, "erreur": str(e)}
-        except Exception as e:
-            return {"ok": False, "erreur": "la retouche a échoué", "detail": f"{type(e).__name__}: {str(e)[:300]}"}
+        return _retoucher(self._editer, photos, coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes)
+
+
+def _retoucher(editer, photos: list[bytes], coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes=None) -> dict:
+    """Essai d'un style sur les photos de la personne (face puis trois-quarts, chacune retouchée seule)."""
+    import base64, io, sys, time
+    from PIL import Image, ImageOps
+    sys.path.insert(0, "/root")
+    from coupes import consigne
+    if not photos:
+        return {"ok": True, "reveil": True}
+    t0 = time.time()
+    try:
+        def ouvrir(b):
+            try:
+                from pillow_heif import register_heif_opener
+                register_heif_opener()
+            except Exception:
+                pass
+            im = ImageOps.exif_transpose(Image.open(io.BytesIO(b))).convert("RGB")
+            im.thumbnail((1024, 1024))
+            return im
+        def webp(im):
+            f = io.BytesIO(); im.save(f, "WEBP", quality=92); return base64.b64encode(f.getvalue()).decode()
+        ims = [ouvrir(b) for b in photos[:3]]
+        face = editer([ims[0]], consigne(coupe, couleur, "face", barbe, texture_barbe, couleur_barbe, lunettes))
+        t_face = time.time() - t0
+        # chaque trois-quarts est retouché seul (avec la face en référence, le modèle remettait la tête de face)
+        vues = [editer([im], consigne(coupe, couleur, "trois_quarts", barbe, texture_barbe, couleur_barbe, lunettes)) for im in ims[1:]]
+        return {"ok": True, "face": webp(face), "vues": [webp(v) for v in vues], "secondes": round(time.time() - t0, 1), "secondes_face": round(t_face, 1)}
+    except ValueError as e:
+        return {"ok": False, "erreur": str(e)}
+    except Exception as e:
+        return {"ok": False, "erreur": "la retouche a échoué", "detail": f"{type(e).__name__}: {str(e)[:300]}"}
 
 
 @app.cls(image=image_relief, gpu="H100", volumes={"/poids": poids}, timeout=600, scaledown_window=15,
@@ -176,6 +183,17 @@ class PortraitRelief:
         self.seg = AutoModelForImageSegmentation.from_pretrained("ZhengPeng7/BiRefNet", trust_remote_code=True,
                                                                  revision="e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4").float().to("cuda").eval()
         self.prof = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device=0)
+
+    def _editer(self, images, texte: str):
+        import torch
+        return self.pipe(image=images, prompt=texte, negative_prompt=" ", true_cfg_scale=1.0, guidance_scale=1.0,
+                         num_inference_steps=8, generator=torch.manual_seed(0)).images[0]
+
+    @modal.method()
+    def retoucher(self, photos: list[bytes], coupe: str | None = None, couleur: str | None = None, barbe: str | None = None,
+                  texture_barbe: str | None = None, couleur_barbe: str | None = None, lunettes: str | None = None) -> dict:
+        """Essai d'un style proposé par l'agent : même modèle déjà chargé que le portrait (démarrage rapide par instantané), 8 pas."""
+        return _retoucher(self._editer, photos, coupe, couleur, barbe, texture_barbe, couleur_barbe, lunettes)
 
     @modal.method()
     def tournee(self, photos: list[bytes], pas: int = 8) -> dict:
@@ -290,7 +308,7 @@ def site():
 
     @web.post("/reveil-coupes")
     async def reveil_coupes():
-        await Retoucheur().retoucher.spawn.aio([], None)      # le modèle de coupe (GPU coûteux) ne démarre que si la personne ouvre l'essai de style
+        await PortraitRelief().retoucher.spawn.aio([], None)      # le modèle de coupe (GPU coûteux) ne démarre que si la personne ouvre l'essai de style
         return {"ok": True}
 
     @web.post("/taches")
@@ -335,10 +353,10 @@ def site():
 
     @web.post("/coupes")
     async def creer_coupe(photos: list[UploadFile] = File(...), coupe: str = Form(""), couleur: str = Form(""), barbe: str = Form(""),
-                          texture_barbe: str = Form(""), couleur_barbe: str = Form("")):
+                          texture_barbe: str = Form(""), couleur_barbe: str = Form(""), lunettes: str = Form("")):
         import sys
         sys.path.insert(0, "/root")
-        from coupes import valider_demande, BARBES, TEXTURES_BARBE, COULEURS_BARBE
+        from coupes import valider_demande, BARBES, TEXTURES_BARBE, COULEURS_BARBE, LUNETTES
         try:
             coupe, teinte = valider_demande(coupe, couleur)
         except ValueError:
@@ -346,7 +364,8 @@ def site():
         barbe = barbe if barbe in BARBES else None
         texture_barbe = texture_barbe if texture_barbe in TEXTURES_BARBE else None
         couleur_barbe = couleur_barbe if couleur_barbe in COULEURS_BARBE else None
-        if not (coupe or teinte or barbe or texture_barbe or couleur_barbe):
+        lunettes = lunettes if lunettes in LUNETTES else None
+        if not (coupe or teinte or barbe or texture_barbe or couleur_barbe or lunettes):
             raise HTTPException(400, "rien à changer")
         if not 1 <= len(photos) <= 3:
             raise HTTPException(400, "envoyez de 1 à 3 photos (la face d'abord)")
@@ -356,7 +375,7 @@ def site():
             if len(c) > MAX_OCTETS:
                 raise HTTPException(413, "photo trop lourde (12 Mo au plus)")
             contenus.append(c)
-        appel = await Retoucheur().retoucher.spawn.aio(contenus, coupe, teinte, barbe, texture_barbe, couleur_barbe)
+        appel = await PortraitRelief().retoucher.spawn.aio(contenus, coupe, teinte, barbe, texture_barbe, couleur_barbe, lunettes)      # serveur rapide (instantané)
         return {"id": appel.object_id}
 
     @web.get("/coupes/{ident}")

@@ -53,3 +53,19 @@ def test_valider_demande():
     assert valider_demande("", "") == (None, None)
     with pytest.raises(ValueError):
         valider_demande("perruque", "noir")
+
+
+def test_lunettes_ajoutees():
+    # 28/11 : l'agent propose des montures ; elles doivent pouvoir s'essayer comme les coupes
+    import coupes as c
+    t = c.consigne(None, None, "face", lunettes="rectangulaire")
+    assert "eyeglasses" in t and "rectangular" in t and "keep the hair unchanged" in t
+    assert set(c.LUNETTES) >= {"rectangulaire", "wayfarer", "cat-eye", "ronde", "ovale", "browline", "aviateur", "carree", "geometrique"}
+
+
+def test_lunettes_seules_suffisent_et_inconnues_refusees():
+    import coupes as c
+    c.consigne(None, None, "trois_quarts", lunettes="wayfarer")
+    import pytest
+    with pytest.raises(ValueError):
+        c.consigne(None, None, "face", lunettes="monocle")
